@@ -200,6 +200,7 @@ export interface EditorHandle {
   insertLocalVariable: () => void
   navigateToLine: (line: number) => void
   updateFormProperty: (targetKind: 'form' | 'control', controlId: string | null, propName: string, value: string | number | boolean) => void
+  navigateToEventSub: (sel: SelectionTarget, eventName: string, eventArgs: Array<{ name: string; description: string; dataType: string; isByRef: boolean }>) => void
 }
 
 const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTarget) => void; onSidebarTab?: (tab: 'project' | 'library' | 'property') => void; selection?: SelectionTarget; alignAction?: AlignAction; onAlignDone?: () => void; onMultiSelectChange?: (count: number) => void; openProjectFiles?: EditorTab[]; onOpenTabsChange?: (tabs: EditorTab[]) => void; onActiveTabChange?: (tabId: string | null) => void; onCommandClick?: (commandName: string, paramIndex?: number) => void; onCommandClear?: () => void; onProblemsChange?: (problems: FileProblem[]) => void; onCursorChange?: (line: number, column: number) => void; onDocTypeChange?: (docType: string) => void; projectDir?: string; onProjectTreeRefresh?: () => void }>(function Editor({ onSelectControl, onSidebarTab, selection, alignAction, onAlignDone, onMultiSelectChange, openProjectFiles, onOpenTabsChange, onActiveTabChange, onCommandClick, onCommandClear, onProblemsChange, onCursorChange, onDocTypeChange, projectDir, onProjectTreeRefresh }, ref) {
@@ -469,6 +470,57 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
     })
   }, [activeTabId, onSelectControl, renameDiskFiles, projectDir, onProjectTreeRefresh, onOpenTabsChange])
 
+  // 属性面板事件栏 → 跳转到或创建指定事件的子程序
+  const navigateToEventSub = useCallback(async (
+    sel: SelectionTarget,
+    eventName: string,
+    eventArgs: Array<{ name: string; description: string; dataType: string; isByRef: boolean }>
+  ) => {
+    if (!sel) return
+    const form = sel.form
+    const efwTab = tabs.find(t => t.language === 'efw' && t.formData?.name === form.name)
+    if (!efwTab || !efwTab.filePath) return
+    const efwDir = efwTab.filePath.replace(/[/\\][^/\\]+$/, '')
+    const eycPath = form.sourceFile
+      ? efwDir + '\\' + form.sourceFile
+      : efwTab.filePath.replace(/\.efw$/i, '.eyc')
+    let subName: string
+    if (sel.kind === 'form') {
+      subName = `_${form.name}_${eventName}`
+    } else {
+      subName = buildEventSubName(sel.control.name, eventName)
+    }
+    const params = eventArgs.map(arg => ({
+      name: arg.name || 'param',
+      dataType: arg.dataType || '整数型',
+      isByRef: arg.isByRef ?? false,
+    }))
+    const existingTab = tabs.find(t => t.filePath === eycPath)
+    if (existingTab) {
+      if (existingTab.id === activeTabId) {
+        eycEditorRef.current?.navigateOrCreateSub(subName, params)
+      } else {
+        pendingNavigateRef.current = { subName, params }
+        setActiveTabId(existingTab.id)
+      }
+    } else {
+      const content = await window.api?.project?.readFile(eycPath)
+      if (content === null || content === undefined) return
+      const fileName = eycPath.split(/[\\/]/).pop() || ''
+      const newTab: EditorTab = {
+        id: eycPath, label: fileName, language: 'eyc',
+        value: content, savedValue: content, filePath: eycPath,
+      }
+      setTabs(prev => {
+        const merged = [...prev, newTab]
+        onOpenTabsChange?.(merged)
+        return merged
+      })
+      pendingNavigateRef.current = { subName, params }
+      setActiveTabId(eycPath)
+    }
+  }, [tabs, activeTabId, buildEventSubName, onOpenTabsChange])
+
   // 暴露给父组件的方法
   useImperativeHandle(ref, () => ({
     save: saveCurrentFile,
@@ -533,7 +585,8 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
       eycEditorRef.current?.navigateToLine(line)
     },
     updateFormProperty,
-  }), [saveCurrentFile, saveAllFiles, closeActiveFile, tabs, activeTabId, onOpenTabsChange, onSidebarTab, updateFormProperty])
+    navigateToEventSub,
+  }), [saveCurrentFile, saveAllFiles, closeActiveFile, tabs, activeTabId, onOpenTabsChange, onSidebarTab, updateFormProperty, navigateToEventSub])
 
   // 接收外部打开的项目文件
   useEffect(() => {
@@ -634,7 +687,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
       ? efwDir + '\\' + sourceFileName
       : activeT.filePath.replace(/\.efw$/i, '.eyc')
     const eventName = defaultEvent?.name || '被创建完毕'
-    const subName = `${formData.name}_${eventName}`
+    const subName = `_${formData.name}_${eventName}`
     const params = (defaultEvent?.args || []).map(arg => ({
       name: arg.name || 'param',
       dataType: arg.dataType || '整数型',

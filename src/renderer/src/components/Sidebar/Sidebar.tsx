@@ -29,6 +29,7 @@ interface SidebarProps {
   onOpenFile?: (fileId: string, fileName: string) => void
   activeFileId?: string | null
   projectDir?: string
+  onEventNavigate?: (selection: SelectionTarget, eventName: string, eventArgs: Array<{ name: string; description: string; dataType: string; isByRef: boolean }>) => void
 }
 
 interface LibItem {
@@ -629,7 +630,7 @@ function PropertyPanel({ selection, windowUnits, onSelectControl, onPropertyChan
   )
 }
 
-function Sidebar({ width, onResize, selection, activeTab, onTabChange, onSelectControl, onPropertyChange, projectTree, onOpenFile, activeFileId, projectDir }: SidebarProps): React.JSX.Element {
+function Sidebar({ width, onResize, selection, activeTab, onTabChange, onSelectControl, onPropertyChange, projectTree, onOpenFile, activeFileId, projectDir, onEventNavigate }: SidebarProps): React.JSX.Element {
   const [windowUnits, setWindowUnits] = useState<LibWindowUnit[]>([])
   const [projectNames, setProjectNames] = useState<string[]>([])
 
@@ -719,9 +720,16 @@ function Sidebar({ width, onResize, selection, activeTab, onTabChange, onSelectC
 
   const selectedTypeName = selection ? (selection.kind === 'form' ? '窗口' : selection.control.type) : ''
   const currentForm = selection ? (selection.kind === 'form' ? selection.form : selection.form) : null
-  const eventTargetName = selection ? (selection.kind === 'form' ? selection.form.name : selection.control.name) : ''
   const EVENT_PREFIX_CHECKED = '✓\u00A0'
   const EVENT_PREFIX_EMPTY = '\u00A0\u00A0'
+
+  const getEventSubName = useCallback((sel: Exclude<SelectionTarget, null>, eventName: string): string => {
+    if (sel.kind === 'form') {
+      return `_${sel.form.name}_${eventName}`
+    }
+    const normalized = sel.control.name.replace(/^_+/, '')
+    return `_${normalized}_${eventName}`
+  }, [])
 
   const [selectedEvent, setSelectedEvent] = useState('')
   const [existingEventSubs, setExistingEventSubs] = useState<Set<string>>(new Set())
@@ -788,14 +796,27 @@ function Sidebar({ width, onResize, selection, activeTab, onTabChange, onSelectC
           <select
             className="sidebar-event-selector"
             value={selectedEvent}
-            onChange={(e) => setSelectedEvent(e.target.value)}
+            onChange={(e) => {
+              const name = e.target.value
+              setSelectedEvent(name)
+              if (selection && name && onEventNavigate) {
+                const ev = selectedEvents.find(ev => ev.name === name)
+                onEventNavigate(selection, name, ev?.args ?? [])
+                const subName = getEventSubName(selection, name)
+                setExistingEventSubs(prev => {
+                  const next = new Set(prev)
+                  next.add(subName)
+                  return next
+                })
+              }
+            }}
             disabled={selectedEvents.length === 0}
           >
             {selectedEvents.length === 0
               ? <option value="">(无事件)</option>
               : selectedEvents.map(ev => (
                   <option key={ev.name} value={ev.name} title={ev.description}>
-                    {(existingEventSubs.has(`_${eventTargetName.replace(/^_+/, '')}_${ev.name}`) ? EVENT_PREFIX_CHECKED : EVENT_PREFIX_EMPTY) + ev.name}
+                    {((selection && existingEventSubs.has(getEventSubName(selection, ev.name))) ? EVENT_PREFIX_CHECKED : EVENT_PREFIX_EMPTY) + ev.name}
                   </option>
                 ))
             }

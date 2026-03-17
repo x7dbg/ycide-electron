@@ -429,14 +429,17 @@ const COMMAND_CODE_GENERATORS: Record<string, CommandCodeGenerator> = {
   '标准输出': (args) => {
     const arg = args[0] || ''
     if (/^[\u201c"]/.test(arg)) {
-      return `wprintf(L"%s\\n", ${formatArgForC(arg)});`
+      // 使用窄字符串 printf：exec-charset=utf-8 保证字节为 UTF-8，管道侧按 UTF-8 解读
+      const narrowArg = formatArgForC(arg).replace(/^L/, '')
+      return `printf("%s\\n", ${narrowArg});`
     }
     return `printf("%lld\\n", (long long)(${formatArgForC(arg)}));`
   },
   '调试输出': (args) => {
     const arg = args[0] || ''
     if (/^[\u201c"]/.test(arg)) {
-      return `wprintf(L"%s\\n", ${formatArgForC(arg)});`
+      const narrowArg = formatArgForC(arg).replace(/^L/, '')
+      return `printf("%s\\n", ${narrowArg});`
     }
     return `printf("%lld\\n", (long long)(${arg}));`
   },
@@ -1011,6 +1014,9 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
       `-Wl,/LIBPATH:${sdk.ucrtLib}`,
       `-Wl,/LIBPATH:${sdk.umLib}`,
     )
+
+    // 源文件/执行字符集均使用 UTF-8，确保中文字符串字面量不被 MSVC 模式按 GBK 解析
+    args.push('-finput-charset=utf-8', '-fexec-charset=utf-8')
 
     // 调试/优化选项
     if (options.debug) {
