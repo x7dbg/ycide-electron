@@ -242,6 +242,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
   const [tabs, setTabs] = useState<EditorTab[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
   const [eycFallbackTabs, setEycFallbackTabs] = useState<Record<string, true>>({})
+  const [projectGlobalVars, setProjectGlobalVars] = useState<Array<{ name: string; type: string }>>([])
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const eycEditorRef = useRef<EycTableEditorHandle | null>(null)
   const [windowUnits, setWindowUnits] = useState<LibWindowUnit[]>([])
@@ -709,6 +710,56 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
     }
   }, [activeTabId])
 
+  // 收集项目内全局变量（.egv + 已打开标签页），用于 EYC 补全
+  useEffect(() => {
+    let cancelled = false
+
+      const parseGlobalVars = (content: string, out: Map<string, string>) => {
+      const re = /^\s*\.全局变量\s+([^,\s]+)(?:\s*,\s*([^,\s]+))?/gm
+      let m: RegExpExecArray | null
+      while ((m = re.exec(content)) !== null) {
+        const name = (m[1] || '').trim()
+        const type = (m[2] || '').trim()
+        if (name && !out.has(name)) out.set(name, type)
+      }
+    }
+
+    ;(async () => {
+      if (!projectDir) {
+        if (!cancelled) setProjectGlobalVars([])
+        return
+      }
+
+      const vars = new Map<string, string>()
+
+      // 优先使用已打开标签页中的最新内容（含未保存修改）
+      for (const t of tabs) {
+        if ((t.language === 'egv' || t.language === 'eyc') && t.value) {
+          parseGlobalVars(eycToYiFormat(t.value), vars)
+        }
+      }
+
+      // 读取磁盘上的 .egv 文件，补齐未打开文件中的全局变量
+      const openedPaths = new Set(tabs.filter(t => t.filePath).map(t => t.filePath!))
+      const files = await window.api?.file?.readDir(projectDir)
+      if (files) {
+        for (const f of files as string[]) {
+          if (!f.toLowerCase().endsWith('.egv')) continue
+          const fp = projectDir + '\\' + f
+          if (openedPaths.has(fp)) continue
+          const content = await window.api?.project?.readFile(fp)
+          if (content) parseGlobalVars(content, vars)
+        }
+      }
+
+      if (!cancelled) {
+        setProjectGlobalVars([...vars.entries()].map(([name, type]) => ({ name, type })))
+      }
+    })()
+
+    return () => { cancelled = true }
+  }, [projectDir, tabs])
+
   // 双击可视化设计器控件 → 跳转到 .eyc 文件并定位/创建事件子程序
   const handleControlDblClick = useCallback(async (ctrl: DesignControl, defaultEvent: LibUnitEvent | null) => {
     const activeT = tabs.find(t => t.id === activeTabId)
@@ -1037,6 +1088,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
               <EycTableEditor
                 ref={eycEditorRef}
                 value={activeTab.value}
+                projectGlobalVars={projectGlobalVars}
                 onChange={handleEycChange}
                 onCommandClick={onCommandClick}
                 onCommandClear={onCommandClear}

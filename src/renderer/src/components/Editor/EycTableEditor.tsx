@@ -51,6 +51,7 @@ function formatOps(val: string): string {
   s = s.replace(/(<>|!=)/g, ' ≠ ')
   s = s.replace(/<=/g, ' ≤ ')
   s = s.replace(/>=/g, ' ≥ ')
+  s = s.replace(/＝/g, ' ＝ ')
   s = s.replace(/(?<!=)=(?!=)/g, ' ＝ ')
   s = s.replace(/</g, ' ＜ ')
   s = s.replace(/>/g, ' ＞ ')
@@ -1055,6 +1056,12 @@ function colorExpr(expr: string): Span[] {
   return out
 }
 
+function getMissingAssignmentRhsTarget(rawLine: string): string | null {
+  const trimmed = rawLine.replace(/[\r\t]/g, '').trim()
+  const m = /^([\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_.]*)\s*(?:=|＝)\s*$/.exec(trimmed)
+  return m ? m[1] : null
+}
+
 // ========== 行重建 ==========
 
 const DECL_PREFIXES = [
@@ -1102,6 +1109,7 @@ export interface EycTableEditorHandle {
 
 interface EycTableEditorProps {
   value: string
+  projectGlobalVars?: Array<{ name: string; type: string }>
   onChange: (value: string) => void
   onCommandClick?: (commandName: string, paramIndex?: number) => void
   onCommandClear?: () => void
@@ -1177,7 +1185,7 @@ function getOuterParenRange(text: string): { start: number; end: number } | null
   return null
 }
 
-const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(function EycTableEditor({ value, onChange, onCommandClick, onCommandClear, onProblemsChange, onCursorChange }, ref) {
+const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(function EycTableEditor({ value, projectGlobalVars = [], onChange, onCommandClick, onCommandClear, onProblemsChange, onCursorChange }, ref) {
   const [editCell, setEditCell] = useState<EditState | null>(null)
   const [editVal, setEditVal] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -1767,7 +1775,13 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     }
     return { userSubNames: subs, userVarNames: vars }
   }, [currentText])
-  useEffect(() => { userVarNamesRef.current = userVarNames }, [userVarNames])
+  const projectGlobalVarNameSet = useMemo(() => new Set(projectGlobalVars.map(v => v.name).filter(Boolean)), [projectGlobalVars])
+  const allKnownVarNames = useMemo(() => {
+    const set = new Set<string>(userVarNames)
+    for (const n of projectGlobalVarNameSet) set.add(n)
+    return set
+  }, [userVarNames, projectGlobalVarNameSet])
+  useEffect(() => { userVarNamesRef.current = allKnownVarNames }, [allKnownVarNames])
 
   // 生成用于补全的用户变量项（局部/参数按当前子程序作用域）
   const userVarCompletionItems = useMemo<CompletionItem[]>(() => {
@@ -1833,8 +1847,13 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       }
     }
 
+    // 项目级全局变量（来自 .egv 文件与其他已打开标签页）
+    for (const v of projectGlobalVars) {
+      addVar(v.name, v.type || '', '全局变量')
+    }
+
     return items
-  }, [currentText, editCell?.lineIndex])
+  }, [currentText, editCell?.lineIndex, projectGlobalVars])
   useEffect(() => {
     userVarCompletionItemsRef.current = userVarCompletionItems
   }, [userVarCompletionItems])
@@ -1844,11 +1863,21 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     const s = new Set<string>()
     for (const c of allCommandsRef.current) s.add(c.name)
     for (const n of userSubNames) s.add(n)
-    for (const n of userVarNames) s.add(n)
+    for (const n of allKnownVarNames) s.add(n)
     for (const k of FLOW_KW) s.add(k)
     return s
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userSubNames, userVarNames, cmdLoadId])
+  }, [userSubNames, allKnownVarNames, cmdLoadId])
+
+  const missingRhsLineSet = useMemo(() => {
+    const set = new Set<number>()
+    for (const blk of blocks) {
+      if (blk.kind !== 'codeline' || !blk.codeLine) continue
+      const rawLine = blk.codeLine.replace(FLOW_AUTO_TAG, '')
+      if (getMissingAssignmentRhsTarget(rawLine)) set.add(blk.lineIndex)
+    }
+    return set
+  }, [blocks])
 
   // 计算问题列表（无效命令 + 变量名冲突）
   useEffect(() => {
@@ -1859,16 +1888,25 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     if (allCommandsRef.current.length > 0) {
       for (const blk of blocks) {
         if (blk.kind !== 'codeline' || !blk.codeLine) continue
-        const spans = colorize(blk.codeLine)
+        const rawLine = blk.codeLine.replace(FLOW_AUTO_TAG, '')
+        const spans = colorize(rawLine)
         let col = 1
         for (const s of spans) {
           if (s.cls === 'funccolor' && !validCommandNames.has(s.text)) {
             problems.push({ line: blk.lineIndex + 1, column: col, message: `未知命令"${s.text}"`, severity: 'error' })
           }
-          if (s.cls === 'assignTarget' && !userVarNames.has(s.text)) {
+          if (s.cls === 'assignTarget' && !allKnownVarNames.has(s.text)) {
             problems.push({ line: blk.lineIndex + 1, column: col, message: `未知变量"${s.text}"`, severity: 'error' })
           }
           col += s.text.length
+        }
+
+        // 赋值语句缺少右值：例如“全局变量1 ＝”
+        const missingTarget = getMissingAssignmentRhsTarget(rawLine)
+        if (missingTarget) {
+          const eqPos = rawLine.search(/(?:=|＝)\s*$/)
+          const column = eqPos >= 0 ? eqPos + 1 : 1
+          problems.push({ line: blk.lineIndex + 1, column, message: `赋值语句缺少右值（${missingTarget}）`, severity: 'error' })
         }
       }
     }
@@ -1940,7 +1978,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     checkLocalVars()
 
     onProblemsChange(problems)
-  }, [blocks, validCommandNames, userVarNames, onProblemsChange, currentText])
+  }, [blocks, validCommandNames, allKnownVarNames, onProblemsChange, currentText])
 
   const commit = useCallback((overrideVal?: string) => {
     if (!editCell || commitGuardRef.current) return
@@ -3577,6 +3615,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                   {(() => {
                     const flow = renderFlowSegs(blk.lineIndex, isExpanded)
                     let treeSkipped = 0
+                            const lineHasMissingRhs = missingRhsLineSet.has(blk.lineIndex)
                     return (
                       <>
                         {flow.node}
@@ -3590,16 +3629,17 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                           const isObjMethod = s.cls === 'cometwolr'
                           const isFlowKw = s.cls === 'comecolor'
                           const isAssignTarget = s.cls === 'assignTarget'
-                          const isInvalid = (isFunc && !validCommandNames.has(s.text)) || (isAssignTarget && !userVarNames.has(s.text))
+                          const isInvalid = (isFunc && !validCommandNames.has(s.text)) || (isAssignTarget && !allKnownVarNames.has(s.text))
+                          const isLineSyntaxInvalid = lineHasMissingRhs && (isAssignTarget || (!isFunc && !isObjMethod && !isFlowKw && s.text.trim() !== ''))
                           if (isFunc || isObjMethod || isFlowKw || isAssignTarget) {
                             return (
                               <span
                                 key={si}
-                                className={`${isAssignTarget ? 'Variablescolor' : s.cls}${isInvalid ? ' eyc-cmd-invalid' : ''}`}
+                                className={`${isAssignTarget ? 'Variablescolor' : s.cls}${(isInvalid || isLineSyntaxInvalid) ? ' eyc-cmd-invalid' : ''}`}
                               >{s.text}</span>
                             )
                           }
-                          return <span key={si} className={s.cls}>{s.text}</span>
+                          return <span key={si} className={`${s.cls}${isLineSyntaxInvalid ? ' eyc-cmd-invalid' : ''}`}>{s.text}</span>
                         })}
                       </>
                     )

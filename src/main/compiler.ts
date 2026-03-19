@@ -74,6 +74,11 @@ interface ProjectInfo {
   projectDir: string
 }
 
+interface GlobalVarDef {
+  name: string
+  type: string
+}
+
 // 正在运行的进程
 let runningProcess: ChildProcess | null = null
 
@@ -292,6 +297,47 @@ function mapTypeToCType(type: string): string {
   return map[type] || 'int'
 }
 
+function splitDeclParts(text: string): string[] {
+  return text.split(/[\uFF0C,]/).map(s => s.trim())
+}
+
+function parseGlobalVarDeclarations(content: string): GlobalVarDef[] {
+  const vars: GlobalVarDef[] = []
+  const lines = content.split('\n')
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/[\u200B\u200C\u200D\u2060]/g, '').trim()
+    if (!line.startsWith('.全局变量 ')) continue
+    const parts = splitDeclParts(line.substring(5))
+    const name = parts[0] || ''
+    const type = parts[1] || '整数型'
+    if (!name) continue
+    vars.push({ name, type })
+  }
+  return vars
+}
+
+function collectProjectGlobalVars(project: ProjectInfo, editorFiles?: Map<string, string>): GlobalVarDef[] {
+  const result: GlobalVarDef[] = []
+  const seen = new Set<string>()
+
+  for (const f of project.files) {
+    if (f.type !== 'EYC' && f.type !== 'EGV') continue
+    const sourcePath = join(project.projectDir, f.fileName)
+    const editorContent = editorFiles?.get(f.fileName)
+    const content = editorContent || (existsSync(sourcePath) ? readFileSync(sourcePath, 'utf-8') : '')
+    if (!content) continue
+
+    const vars = parseGlobalVarDeclarations(content)
+    for (const v of vars) {
+      if (seen.has(v.name)) continue
+      seen.add(v.name)
+      result.push(v)
+    }
+  }
+
+  return result
+}
+
 // ========== 基于支持库的命令解析系统 ==========
 
 // 从已加载的支持库构建命令查找表
@@ -490,13 +536,21 @@ function generateCCodeForCommand(cmd: LibCommand & { libraryName: string }, args
 // .eyc 转 C 代码转译器
 // 将易语言源代码中的子程序转译成 C 函数
 // 命令识别基于已加载的支持库，支持第三方支持库扩展
-function transpileEycContent(eycContent: string, fileName: string): string {
+function transpileEycContent(eycContent: string, fileName: string, projectGlobals: GlobalVarDef[] = []): string {
   // 从已加载的支持库构建命令查找表
   const commandMap = buildCommandMap()
 
   const lines = eycContent.split('\n')
   let result = `/* 由 ycIDE 自动从 ${fileName} 生成 */\n`
   result += '#include <windows.h>\n#include <stdio.h>\n#include <stdint.h>\n\n'
+
+  if (projectGlobals.length > 0) {
+    result += '/* 项目全局变量声明 */\n'
+    for (const gv of projectGlobals) {
+      result += `extern ${mapTypeToCType(gv.type)} ${gv.name};\n`
+    }
+    result += '\n'
+  }
 
   // ---- 第一遍：收集并输出 自定义数据类型 ----
   {
@@ -569,10 +623,18 @@ function transpileEycContent(eycContent: string, fileName: string): string {
     }
 
     if (line.startsWith('.局部变量 ')) {
-      const parts = line.substring(5).split(',').map(s => s.trim())
+      const parts = splitDeclParts(line.substring(5))
       const varName = parts[0] || 'v'
       const varType = parts[1] || '整数型'
       emitSubLine(`${mapTypeToCType(varType)} ${varName};`)
+      continue
+    }
+
+    if (!inSub && line.startsWith('.全局变量 ')) {
+      const parts = splitDeclParts(line.substring(5))
+      const varName = parts[0] || 'g'
+      const varType = parts[1] || '整数型'
+      result += `${mapTypeToCType(varType)} ${varName};\n`
       continue
     }
 
@@ -683,6 +745,7 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
   mainCode += '#include <windows.h>\n#include <stdio.h>\n#include <io.h>\n#include <fcntl.h>\n\n'
 
   const isWindowsApp = project.outputType === 'WindowsApp'
+  const projectGlobals = collectProjectGlobalVars(project, editorFiles)
 
   if (isWindowsApp) {
     // 查找启动窗口文件
@@ -763,15 +826,15 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
     // 前向声明 .eyc 中的子程序
     // 查找关联的 .eyc 文件并转译
     for (const f of project.files) {
-      if (f.type !== 'EYC') continue
+      if (f.type !== 'EYC' && f.type !== 'EGV') continue
       const eycPath = join(project.projectDir, f.fileName)
       const editorContent = editorFiles?.get(f.fileName)
       const content = editorContent || (existsSync(eycPath) ? readFileSync(eycPath, 'utf-8') : '')
       if (!content) continue
 
       sendMessage({ type: 'info', text: `正在转换源文件: ${f.fileName}` })
-      const cCode = transpileEycContent(content, f.fileName)
-      const cFileName = f.fileName.replace(/\.eyc$/i, '.cpp')
+      const cCode = transpileEycContent(content, f.fileName, projectGlobals)
+      const cFileName = f.fileName.replace(/\.(eyc|egv)$/i, '.cpp')
       const cFilePath = join(tempDir, cFileName)
       writeFileSync(cFilePath, cCode, 'utf-8')
       additionalCFiles.push(cFilePath)
@@ -999,15 +1062,15 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
     // 控制台程序
     // 先转译 .eyc 文件
     for (const f of project.files) {
-      if (f.type !== 'EYC') continue
+      if (f.type !== 'EYC' && f.type !== 'EGV') continue
       const eycPath = join(project.projectDir, f.fileName)
       const editorContent = editorFiles?.get(f.fileName)
       const content = editorContent || (existsSync(eycPath) ? readFileSync(eycPath, 'utf-8') : '')
       if (!content) continue
 
       sendMessage({ type: 'info', text: `正在转换源文件: ${f.fileName}` })
-      const cCode = transpileEycContent(content, f.fileName)
-      const cFileName = f.fileName.replace(/\.eyc$/i, '.cpp')
+      const cCode = transpileEycContent(content, f.fileName, projectGlobals)
+      const cFileName = f.fileName.replace(/\.(eyc|egv)$/i, '.cpp')
       const cFilePath = join(tempDir, cFileName)
       writeFileSync(cFilePath, cCode, 'utf-8')
       additionalCFiles.push(cFilePath)
