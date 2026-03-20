@@ -24,8 +24,8 @@ static EVENT_ARG_INFO2 s_args_mouse[] = {
 
 // 键盘事件参数: 键代码, 功能键状态
 static EVENT_ARG_INFO2 s_args_key[] = {
-    {"键代码", "按键虚拟键代码", 0, SDT_INT},
-    {"功能键状态", "Shift/Ctrl/Alt功能键状态", 0, SDT_INT},
+    {"键代码", "按键虚拟键代码。可使用 #F1键、#回车键 等键常量进行比较。", 0, SDT_INT},
+    {"功能键状态", "功能键状态(1=#Ctrl键状态, 2=#Shift键状态, 4=#Alt键状态)，可通过位与判断。", 0, SDT_INT},
 };
 
 // 字符事件参数: 字符代码
@@ -35,7 +35,7 @@ static EVENT_ARG_INFO2 s_args_char[] = {
 
 // 预处理键盘参数: 键代码
 static EVENT_ARG_INFO2 s_args_prekey[] = {
-    {"键代码", "按键虚拟键代码", 0, SDT_INT},
+    {"键代码", "按键虚拟键代码。可使用 #F1键、#回车键 等键常量进行比较。", 0, SDT_INT},
 };
 
 // 滚动条参数: 位置, 方向
@@ -61,7 +61,7 @@ static EVENT_INFO2 s_evt_Window[] = {
     {"位置被改变",      "窗口位置改变后触发",               EV_IS_VER2, 0, NULL, _SDT_NULL},
     {"尝试关闭窗口",    "用户尝试关闭窗口时触发",           EV_IS_VER2, 1, s_args_close_reason, _SDT_NULL},
     {"拖放文件",        "文件被拖放到窗口上时触发",         EV_IS_VER2, 0, NULL, _SDT_NULL},
-    {"按下某键",        "有按键被按下时触发(预处理)",       EV_IS_VER2, 1, s_args_prekey, _SDT_NULL},
+    {"按下某键",        "有按键被按下时触发(预处理)。返回假则取消本事件并阻止继续传递，返回真或无返回值则继续传递。", EV_IS_VER2, 1, s_args_prekey, SDT_BOOL},
     {"字符输入",        "有字符输入时触发(预处理)",         EV_IS_VER2, 1, s_args_char, _SDT_NULL},
     {"滚动条位置被改变","滚动条位置发生改变时触发",         EV_IS_VER2, 2, s_args_scroll, _SDT_NULL},
     {"即将弹出菜单",    "右键菜单即将弹出时触发",           EV_IS_VER2, 0, NULL, _SDT_NULL},
@@ -70,7 +70,7 @@ static EVENT_INFO2 s_evt_Window[] = {
     {"鼠标右键被按下",  "鼠标右键在窗口上被按下",           EV_IS_VER2, 3, s_args_mouse, _SDT_NULL},
     {"鼠标右键被放开",  "鼠标右键在窗口上被放开",           EV_IS_VER2, 3, s_args_mouse, _SDT_NULL},
     {"鼠标移动",        "鼠标在窗口上移动",                 EV_IS_VER2, 3, s_args_mouse, _SDT_NULL},
-    {"按下某键",        "有按键被按下时触发",               EV_IS_VER2, 2, s_args_key, _SDT_NULL},
+    {"按下某键",        "有按键被按下时触发。返回假则取消本事件并阻止继续传递，返回真或无返回值则继续传递。", EV_IS_VER2, 2, s_args_key, SDT_BOOL},
     {"放开某键",        "有按键被放开时触发",               EV_IS_VER2, 2, s_args_key, _SDT_NULL},
     {"字符输入",        "有字符输入时触发",                 EV_IS_VER2, 1, s_args_char, _SDT_NULL},
     {"获得焦点",        "窗口获得输入焦点时触发",           EV_IS_VER2, 0, NULL, _SDT_NULL},
@@ -141,7 +141,7 @@ static EVENT_INFO2 s_evt_ComboBox[] = {
     {"鼠标左键被按下",  "鼠标左键被按下时触发",     EV_IS_VER2, 3, s_args_mouse, _SDT_NULL},
     {"鼠标左键被放开",  "鼠标左键被放开时触发",     EV_IS_VER2, 3, s_args_mouse, _SDT_NULL},
     {"鼠标移动",        "鼠标移动时触发",           EV_IS_VER2, 3, s_args_mouse, _SDT_NULL},
-    {"按下某键",        "有按键被按下时触发",       EV_IS_VER2, 2, s_args_key, _SDT_NULL},
+    {"按下某键",        "有按键被按下时触发。返回假则取消本事件并阻止继续传递，返回真或无返回值则继续传递。", EV_IS_VER2, 2, s_args_key, SDT_BOOL},
     {"字符输入",        "有字符输入时触发",         EV_IS_VER2, 1, s_args_char, _SDT_NULL},
 };
 static const int s_evt_ComboBox_count = sizeof(s_evt_ComboBox) / sizeof(s_evt_ComboBox[0]);
@@ -162,7 +162,7 @@ static EVENT_INFO2 s_evt_ChkListBox[] = {
     {"选择框被改变",    "选择框状态改变时触发",     EV_IS_VER2, 0, NULL, _SDT_NULL},
     {"鼠标左键被按下",  "鼠标左键被按下时触发",     EV_IS_VER2, 3, s_args_mouse, _SDT_NULL},
     {"鼠标右键被按下",  "鼠标右键被按下时触发",     EV_IS_VER2, 3, s_args_mouse, _SDT_NULL},
-    {"按下某键",        "有按键被按下时触发",       EV_IS_VER2, 2, s_args_key, _SDT_NULL},
+    {"按下某键",        "有按键被按下时触发。返回假则取消本事件并阻止继续传递，返回真或无返回值则继续传递。", EV_IS_VER2, 2, s_args_key, SDT_BOOL},
 };
 static const int s_evt_ChkListBox_count = sizeof(s_evt_ChkListBox) / sizeof(s_evt_ChkListBox[0]);
 
@@ -302,7 +302,7 @@ static EVENT_INFO2 s_evt_Grid[] = {
     {"自绘单元格",      "自绘单元格时触发",         EV_IS_VER2, 0, NULL, _SDT_NULL},
     {"行将编辑",        "即将编辑单元格时触发",     EV_IS_VER2, 0, NULL, SDT_BOOL},
     {"编辑完毕",        "编辑单元格完毕时触发",     EV_IS_VER2, 0, NULL, _SDT_NULL},
-    {"按下某键",        "有按键被按下时触发",       EV_IS_VER2, 2, s_args_key, _SDT_NULL},
+    {"按下某键",        "有按键被按下时触发。返回假则取消本事件并阻止继续传递，返回真或无返回值则继续传递。", EV_IS_VER2, 2, s_args_key, SDT_BOOL},
     {"鼠标右键被按下",  "鼠标右键被按下时触发",     EV_IS_VER2, 3, s_args_mouse, _SDT_NULL},
     {"插入行",          "行被插入时触发",           EV_IS_VER2, 0, NULL, _SDT_NULL},
     {"删除行",          "行被删除时触发",           EV_IS_VER2, 0, NULL, _SDT_NULL},

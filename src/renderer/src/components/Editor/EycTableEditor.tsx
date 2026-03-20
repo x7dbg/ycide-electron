@@ -107,7 +107,12 @@ function parseLines(text: string): ParsedLine[] {
       ['image', '.图片 '], ['sound', '.声音 '],
     ]
     for (const [dt, pf] of decls) {
-      if (t.startsWith(pf)) return { type: dt, raw: line, fields: splitCSV(t.slice(pf.length)) }
+      // 兼容“仅声明关键字无字段”的情况（例如清空字段后变成 .局部变量）
+      const kw = pf.trim()
+      if (t === kw || t.startsWith(pf)) {
+        const rest = t === kw ? '' : t.slice(pf.length)
+        return { type: dt, raw: line, fields: splitCSV(rest) }
+      }
     }
     if (lt.startsWith('    .成员 ') || t.startsWith('.成员 ')) {
       const pf = lt.startsWith('    .成员 ') ? '    .成员 ' : '.成员 '
@@ -123,7 +128,7 @@ function parseLines(text: string): ParsedLine[] {
 
 // ========== 构建渲染块 ==========
 
-function buildBlocks(text: string): RenderBlock[] {
+function buildBlocks(text: string, isClassModule = false): RenderBlock[] {
   const lines = parseLines(text)
   const blocks: RenderBlock[] = []
   let tbl: RenderBlock | null = null
@@ -167,16 +172,29 @@ function buildBlocks(text: string): RenderBlock[] {
     if (ln.type === 'assembly') {
       flush()
       const rest = ln.raw.replace(/[\r\t]/g, '').trim().slice('.程序集 '.length)
-      const parts = rest.split(', , , ')
+      const parts = splitCSV(rest)
       const name = parts[0] || ''
-      const remark = parts[1] || ''
-      newTbl('assembly', ['窗口程序集名', '保 留\u00A0\u00A0', '保 留', '备 注'], i, 'eAssemblycolor')
-      pushRow(i, [
-        { text: name, cls: 'eProcolor', fieldIdx: 0 },
-        { text: '\u00A0', cls: '' },
-        { text: '\u00A0', cls: '' },
-        { text: remark, cls: 'Remarkscolor', fieldIdx: 3, sliceField: true },
-      ])
+      if (isClassModule) {
+        const baseClass = parts[1] || '\u00A0'
+        const isPublic = (parts[2] || '').includes('公开')
+        const remark = parts.length > 3 ? parts.slice(3).join(', ') : ''
+        newTbl('assembly', ['类 名', '基 类', '公开', '备 注'], i, 'eAssemblycolor')
+        pushRow(i, [
+          { text: name, cls: 'eProcolor', fieldIdx: 0 },
+          { text: baseClass, cls: 'eTypecolor', fieldIdx: 1 },
+          { text: isPublic ? '√' : '\u00A0', cls: 'eTickcolor', align: 'center' },
+          { text: remark, cls: 'Remarkscolor', fieldIdx: 3, sliceField: true },
+        ])
+      } else {
+        const remark = parts.length > 3 ? parts.slice(3).join(', ') : ''
+        newTbl('assembly', ['窗口程序集名', '保 留\u00A0\u00A0', '保 留', '备 注'], i, 'eAssemblycolor')
+        pushRow(i, [
+          { text: name, cls: 'eProcolor', fieldIdx: 0 },
+          { text: '\u00A0', cls: '' },
+          { text: '\u00A0', cls: '' },
+          { text: remark, cls: 'Remarkscolor', fieldIdx: 3, sliceField: true },
+        ])
+      }
       he = 3; continue
     }
 
@@ -206,18 +224,37 @@ function buildBlocks(text: string): RenderBlock[] {
     if (ln.type === 'sub') {
       flush()
       tbl = { kind: 'table', tableType: 'sub', rows: [], lineIndex: i }
-      tbl.rows.push({ lineIndex: i, isHeader: true, cells: [
-        { text: '子程序名', cls: 'eHeadercolor' },
-        { text: '返回值类型', cls: 'eHeadercolor' },
-        { text: '公开', cls: 'eHeadercolor' },
-        { text: '备 注', cls: 'eHeadercolor', colSpan: 3 },
-      ]})
-      tbl.rows.push({ lineIndex: i, cells: [
-        { text: f[0] || '', cls: 'eProcolor', fieldIdx: 0 },
-        { text: f[1] || '\u00A0', cls: 'eTypecolor', fieldIdx: 1 },
-        { text: f[2] === '公开' ? '√' : '\u00A0', cls: 'eTickcolor', align: 'center' },
-        { text: f.length > 3 ? f.slice(3).join(', ') : '', cls: 'Remarkscolor', colSpan: 3, fieldIdx: 3, sliceField: true },
-      ]})
+      if (isClassModule) {
+        tbl.rows.push({ lineIndex: i, isHeader: true, cells: [
+          { text: '子程序名', cls: 'eHeadercolor' },
+          { text: '返回值类型', cls: 'eHeadercolor' },
+          { text: '公开', cls: 'eHeadercolor' },
+          { text: '保 留', cls: 'eHeadercolor' },
+          { text: '备 注', cls: 'eHeadercolor', colSpan: 2 },
+        ]})
+        const reserveText = f[3] || '\u00A0'
+        const remarkText = f.length > 4 ? f.slice(4).join(', ') : (f.length > 3 ? (f[3] || '') : '')
+        tbl.rows.push({ lineIndex: i, cells: [
+          { text: f[0] || '', cls: 'eProcolor', fieldIdx: 0 },
+          { text: f[1] || '\u00A0', cls: 'eTypecolor', fieldIdx: 1 },
+          { text: f[2] === '公开' ? '√' : '\u00A0', cls: 'eTickcolor', align: 'center' },
+          { text: reserveText, cls: '', fieldIdx: 3 },
+          { text: remarkText, cls: 'Remarkscolor', colSpan: 2, fieldIdx: 4, sliceField: true },
+        ]})
+      } else {
+        tbl.rows.push({ lineIndex: i, isHeader: true, cells: [
+          { text: '子程序名', cls: 'eHeadercolor' },
+          { text: '返回值类型', cls: 'eHeadercolor' },
+          { text: '公开', cls: 'eHeadercolor' },
+          { text: '备 注', cls: 'eHeadercolor', colSpan: 3 },
+        ]})
+        tbl.rows.push({ lineIndex: i, cells: [
+          { text: f[0] || '', cls: 'eProcolor', fieldIdx: 0 },
+          { text: f[1] || '\u00A0', cls: 'eTypecolor', fieldIdx: 1 },
+          { text: f[2] === '公开' ? '√' : '\u00A0', cls: 'eTickcolor', align: 'center' },
+          { text: f.length > 3 ? f.slice(3).join(', ') : '', cls: 'Remarkscolor', colSpan: 3, fieldIdx: 3, sliceField: true },
+        ]})
+      }
       he = 1; continue
     }
 
@@ -238,16 +275,30 @@ function buildBlocks(text: string): RenderBlock[] {
       if (he !== 1 && he !== 11) {
         flush()
         tbl = { kind: 'table', tableType: 'sub', rows: [], lineIndex: i }
-        tbl.rows.push({ lineIndex: i, isHeader: true, cells: [
-          { text: '子程序名', cls: 'eHeadercolor' },
-          { text: '返回值类型', cls: 'eHeadercolor' },
-          { text: '公开', cls: 'eHeadercolor' },
-          { text: '备 注', cls: 'eHeadercolor', colSpan: 3 },
-        ]})
-        tbl.rows.push({ lineIndex: i, cells: [
-          { text: '(未填写子程序名)', cls: 'Wrongcolor' },
-          { text: '\u00A0', cls: '' }, { text: '\u00A0', cls: '' }, { text: '\u00A0', cls: '', colSpan: 3 },
-        ]})
+        if (isClassModule) {
+          tbl.rows.push({ lineIndex: i, isHeader: true, cells: [
+            { text: '子程序名', cls: 'eHeadercolor' },
+            { text: '返回值类型', cls: 'eHeadercolor' },
+            { text: '公开', cls: 'eHeadercolor' },
+            { text: '保 留', cls: 'eHeadercolor' },
+            { text: '备 注', cls: 'eHeadercolor', colSpan: 2 },
+          ]})
+          tbl.rows.push({ lineIndex: i, cells: [
+            { text: '(未填写子程序名)', cls: 'Wrongcolor' },
+            { text: '\u00A0', cls: '' }, { text: '\u00A0', cls: '' }, { text: '\u00A0', cls: '' }, { text: '\u00A0', cls: '', colSpan: 2 },
+          ]})
+        } else {
+          tbl.rows.push({ lineIndex: i, isHeader: true, cells: [
+            { text: '子程序名', cls: 'eHeadercolor' },
+            { text: '返回值类型', cls: 'eHeadercolor' },
+            { text: '公开', cls: 'eHeadercolor' },
+            { text: '备 注', cls: 'eHeadercolor', colSpan: 3 },
+          ]})
+          tbl.rows.push({ lineIndex: i, cells: [
+            { text: '(未填写子程序名)', cls: 'Wrongcolor' },
+            { text: '\u00A0', cls: '' }, { text: '\u00A0', cls: '' }, { text: '\u00A0', cls: '', colSpan: 3 },
+          ]})
+        }
       }
       if (he !== 11) {
         addHdr(['参数名', '类 型', '参考', '可空', '数组', '备 注'], i)
@@ -318,11 +369,16 @@ function buildBlocks(text: string): RenderBlock[] {
     // 数据类型
     if (ln.type === 'dataType') {
       flush()
-      newTbl('dataType', ['数据类型名', '公开', '备 注'], i)
+      tbl = { kind: 'table', tableType: 'dataType', rows: [], lineIndex: i }
+      tbl.rows.push({ lineIndex: i, isHeader: true, cells: [
+        { text: '数据类型名', cls: 'eHeadercolor' },
+        { text: '公开', cls: 'eHeadercolor' },
+        { text: '备 注', cls: 'eHeadercolor', colSpan: 3 },
+      ]})
       pushRow(i, [
         { text: f[0] || '', cls: 'eProcolor', fieldIdx: 0 },
         { text: f[1]?.includes('公开') ? '√' : '\u00A0', cls: 'eTickcolor', align: 'center' },
-        { text: f.length > 2 ? f.slice(2).join(', ') : '', cls: 'Remarkscolor', fieldIdx: 2, sliceField: true },
+        { text: f.length > 2 ? f.slice(2).join(', ') : '', cls: 'Remarkscolor', fieldIdx: 2, sliceField: true, colSpan: 3 },
       ])
       addHdr(['成员名', '类 型', '传址', '数组', '备 注 '], i)
       he = 8; continue
@@ -332,10 +388,15 @@ function buildBlocks(text: string): RenderBlock[] {
     if (ln.type === 'dataTypeMember') {
       if (he !== 8) {
         flush()
-        newTbl('dataType', ['数据类型名', '公开', '备 注'], i)
+        tbl = { kind: 'table', tableType: 'dataType', rows: [], lineIndex: i }
+        tbl.rows.push({ lineIndex: i, isHeader: true, cells: [
+          { text: '数据类型名', cls: 'eHeadercolor' },
+          { text: '公开', cls: 'eHeadercolor' },
+          { text: '备 注', cls: 'eHeadercolor', colSpan: 3 },
+        ]})
         pushRow(i, [
           { text: '(未定义数据类型名)', cls: 'Wrongcolor' },
-          { text: '\u00A0', cls: '' }, { text: '\u00A0', cls: '' },
+          { text: '\u00A0', cls: '' }, { text: '\u00A0', cls: '', colSpan: 3 },
         ])
         addHdr(['成员名', '类 型', '传址', '数组', '备 注 '], i)
       }
@@ -352,20 +413,26 @@ function buildBlocks(text: string): RenderBlock[] {
     // DLL 命令
     if (ln.type === 'dll') {
       flush()
-      newTbl('dll', ['DLL命令名', '返回值类型', '公开', '备 注'], i)
+      tbl = { kind: 'table', tableType: 'dll', rows: [], lineIndex: i }
+      tbl.rows.push({ lineIndex: i, isHeader: true, cells: [
+        { text: 'DLL命令名', cls: 'eHeadercolor' },
+        { text: '返回值类型', cls: 'eHeadercolor' },
+        { text: '公开', cls: 'eHeadercolor' },
+        { text: '备 注', cls: 'eHeadercolor', colSpan: 2 },
+      ]})
       pushRow(i, [
         { text: f[0] || '', cls: 'eProcolor', fieldIdx: 0 },
         { text: f[1] || '\u00A0', cls: 'eTypecolor', fieldIdx: 1 },
         { text: f[4] === '公开' ? '√' : '\u00A0', cls: 'eTickcolor', align: 'center' },
-        { text: f.length > 5 ? f.slice(5).join(', ') : '', cls: 'Remarkscolor', fieldIdx: 5, sliceField: true },
+        { text: f.length > 5 ? f.slice(5).join(', ') : '', cls: 'Remarkscolor', fieldIdx: 5, sliceField: true, colSpan: 2 },
       ])
       {
         const libFile = f[2] ? unquote(f[2]) : ''
         const cmdName = f[3] ? unquote(f[3]) : ''
         pushHdrRow(i, [{ text: 'DLL库文件名:', cls: 'eHeadercolor', colSpan: 5 }])
-        pushRow(i, [{ text: libFile || '(未填写库文件名)', cls: libFile ? 'eAPIcolor' : 'Wrongcolor', colSpan: 5, fieldIdx: 2 }])
+        pushRow(i, [{ text: libFile || '', cls: libFile ? 'eAPIcolor' : '', colSpan: 5, fieldIdx: 2 }])
         pushHdrRow(i, [{ text: '在DLL库中对应命令名:', cls: 'eHeadercolor', colSpan: 5 }])
-        pushRow(i, [{ text: cmdName || '(未填写命令名)', cls: cmdName ? 'eAPIcolor' : 'Wrongcolor', colSpan: 5, fieldIdx: 3 }])
+        pushRow(i, [{ text: cmdName || '', cls: cmdName ? 'eAPIcolor' : '', colSpan: 5, fieldIdx: 3 }])
       }
       addHdr(['参数名', '类 型', '传址', '数组', '备 注 '], i)
       he = 4; continue
@@ -927,6 +994,25 @@ const FLOW_KW = new Set([
   '计次循环首', '计次循环尾', '变量循环首', '变量循环尾', '如果结束',
 ])
 
+const NUMERIC_TYPE_COMMON_NOTE = '字节型、短整数型、整数型、长整数型、小数型、双精度小数型统称为数值型，彼此可转换；编程时需注意溢出与精度丢失（例如 257 转字节型后为 1）。'
+
+const BUILTIN_TYPE_ITEMS: Array<{ name: string; englishName: string; description: string }> = [
+  { name: '字节型', englishName: 'byte', description: '可容纳 0 到 255 之间的数值。' + NUMERIC_TYPE_COMMON_NOTE },
+  { name: '短整数型', englishName: 'short', description: '可容纳 -32,768 到 32,767 之间的数值，尺寸为 2 个字节。' + NUMERIC_TYPE_COMMON_NOTE },
+  { name: '整数型', englishName: 'int', description: '可容纳 -2,147,483,648 到 2,147,483,647 之间的数值，尺寸为 4 个字节。' + NUMERIC_TYPE_COMMON_NOTE },
+  { name: '长整数型', englishName: 'int64', description: '可容纳 -9,223,372,036,854,775,808 到 9,223,372,036,854,775,807 之间的数值，尺寸为 8 个字节。' + NUMERIC_TYPE_COMMON_NOTE },
+  { name: '小数型', englishName: 'float', description: '可容纳 3.4E +/- 38（7位小数）之间的数值，尺寸为 4 个字节。' + NUMERIC_TYPE_COMMON_NOTE },
+  { name: '双精度小数型', englishName: 'double', description: '可容纳 1.7E +/- 308（15位小数）之间的数值，尺寸为 8 个字节。' + NUMERIC_TYPE_COMMON_NOTE },
+  { name: '逻辑型', englishName: 'bool', description: '值只可能为“真”或“假”，尺寸为 2 个字节。“真”和“假”为系统预定义常量，其对应的英文常量名称为“true”和“false”。' },
+  { name: '日期时间型', englishName: 'datetime', description: '用作记录日期及时间，尺寸为 8 个字节。' },
+  { name: '文本型', englishName: 'text', description: '用作记录一段文本，文本由以字节 0 结束的一系列字符组成。' },
+  { name: '字节集', englishName: 'bin', description: '用作记录一段字节型数据。字节集与字节数组之间可以互相转换，在程序中允许使用字节数组的地方也可以使用字节集，或者相反。字节数组的使用方法，譬如用中括号对“[]”加索引数值引用字节成员，使用数组型数值数据进行赋值等等，都可以被字节集所使用。两者之间唯一的不同是字节集可以变长，因此可把字节集看作可变长的字节数组。' },
+  { name: '子程序指针', englishName: 'subptr', description: '用作指向一个子程序，尺寸为 4 个字节。具有此数据类型的容器可以用来间接调用子程序。参见例程 sample.e 中的相应部分。' },
+  { name: '通用型', englishName: 'any', description: '可存放不同类型的数据，适用于需要接收多种类型值的场景。' },
+]
+
+const AC_PAGE_SIZE = 30
+
 function colorize(raw: string): Span[] {
   const trimmed = raw.replace(/[\r\t]/g, '')
   let stripped = trimmed.replace(/^ +/, '')
@@ -1062,6 +1148,10 @@ function getMissingAssignmentRhsTarget(rawLine: string): string | null {
   return m ? m[1] : null
 }
 
+function isValidVariableLikeName(name: string): boolean {
+  return /^[\u4e00-\u9fa5A-Za-z_]/.test(name.trim())
+}
+
 // ========== 行重建 ==========
 
 const DECL_PREFIXES = [
@@ -1102,6 +1192,7 @@ function rebuildLineField(rawLine: string, fieldIdx: number, newValue: string, i
 export interface EycTableEditorHandle {
   insertSubroutine: () => void
   insertLocalVariable: () => void
+  insertConstant: () => void
   navigateOrCreateSub: (subName: string, params: Array<{ name: string; dataType: string; isByRef: boolean }>) => void
   navigateToLine: (line: number) => void
   editorAction: (action: string) => void
@@ -1109,7 +1200,13 @@ export interface EycTableEditorHandle {
 
 interface EycTableEditorProps {
   value: string
+  isClassModule?: boolean
   projectGlobalVars?: Array<{ name: string; type: string }>
+  projectConstants?: Array<{ name: string; value: string }>
+  projectDllCommands?: Array<{ name: string; returnType: string; description: string; params: CompletionParam[] }>
+  projectDataTypes?: Array<{ name: string }>
+  projectClassNames?: Array<{ name: string }>
+  onClassNameRename?: (oldName: string, newName: string) => void
   onChange: (value: string) => void
   onCommandClick?: (commandName: string, paramIndex?: number) => void
   onCommandClear?: () => void
@@ -1185,7 +1282,7 @@ function getOuterParenRange(text: string): { start: number; end: number } | null
   return null
 }
 
-const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(function EycTableEditor({ value, projectGlobalVars = [], onChange, onCommandClick, onCommandClear, onProblemsChange, onCursorChange }, ref) {
+const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(function EycTableEditor({ value, isClassModule = false, projectGlobalVars = [], projectConstants = [], projectDllCommands = [], projectDataTypes = [], projectClassNames = [], onClassNameRename, onChange, onCommandClick, onCommandClear, onProblemsChange, onCursorChange }, ref) {
   const [editCell, setEditCell] = useState<EditState | null>(null)
   const [editVal, setEditVal] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -1318,24 +1415,23 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
 
   // 全局键盘处理（选择状态下 Ctrl+C 复制、Delete 删除；Ctrl+A 全选）
   useEffect(() => {
-    const getFirstDeclarationLine = (ls: string[]): number => {
+    const getProtectedDeclarationLine = (ls: string[]): number => {
       const parsed = parseLines(ls.join('\n'))
       for (let i = 0; i < parsed.length; i++) {
-        const tp = parsed[i].type
-        if (tp !== 'blank' && tp !== 'comment' && tp !== 'code' && tp !== 'version' && tp !== 'supportLib') return i
+        if (parsed[i].type === 'assembly') return i
       }
       return -1
     }
 
     const getDeletableSelection = (ls: string[], selection: Set<number>): { protectedLine: number; deletable: Set<number>; sorted: number[] } => {
-      const protectedLine = getFirstDeclarationLine(ls)
+      const protectedLine = getProtectedDeclarationLine(ls)
       const deletable = new Set<number>()
       for (const i of selection) {
         if (i < 0 || i >= ls.length) continue
         if (i === protectedLine) continue
         deletable.add(i)
       }
-      return { protectedLine, deletable, sorted: [...deletable].sort((a, b) => a - b) }
+      return { protectedLine, deletable, sorted: Array.from(deletable).sort((a, b) => a - b) }
     }
 
     const handler = (e: KeyboardEvent): void => {
@@ -1492,15 +1588,24 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
   }, [selectedLines, currentText, onChange, pushUndo])
 
   // ===== 自动补全状态 =====
-  interface AcDisplayItem { cmd: CompletionItem; engMatch: boolean }
+  interface AcDisplayItem {
+    cmd: CompletionItem
+    engMatch: boolean
+    isMore?: boolean
+    remainCount?: number
+    hiddenItems?: AcDisplayItem[]
+  }
   const [acItems, setAcItems] = useState<AcDisplayItem[]>([])
   const [acIndex, setAcIndex] = useState(0)
   const [acVisible, setAcVisible] = useState(false)
   const [acPos, setAcPos] = useState({ left: 0, top: 0 })
+  const [libraryDataTypeNames, setLibraryDataTypeNames] = useState<string[]>([])
+  const [libraryConstants, setLibraryConstants] = useState<Array<{ name: string; englishName: string; description: string; value: string; libraryName: string }>>([])
   const allCommandsRef = useRef<CompletionItem[]>([])
   const memberCommandsRef = useRef<CompletionItem[]>([])
   const [cmdLoadId, setCmdLoadId] = useState(0) // 触发重新验证
   const acWordStartRef = useRef(0) // 当前补全词在 editVal 中的起始位置
+  const acPrefixRef = useRef('')
   const acListRef = useRef<HTMLDivElement>(null)
   // 用 ref 跟踪最新值，以便在 useCallback 闭包中访问（避免依赖项膨胀）
   const editCellRef = useRef(editCell)
@@ -1510,11 +1615,38 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
   const acItemsRef = useRef<AcDisplayItem[]>([])
   acItemsRef.current = acItems
   const userVarCompletionItemsRef = useRef<CompletionItem[]>([])
+  const constantCompletionItemsRef = useRef<CompletionItem[]>([])
+  const libraryConstantCompletionItemsRef = useRef<CompletionItem[]>([])
+  const dllCompletionItemsRef = useRef<CompletionItem[]>([])
+  const typeCompletionItemsRef = useRef<CompletionItem[]>([])
+  const classNameCompletionItemsRef = useRef<CompletionItem[]>([])
+
+  const canUseTypeCompletion = useCallback((lineIndex: number, fieldIdx: number): boolean => {
+    if (fieldIdx !== 1) return false
+    const srcLines = currentText.split('\n')
+    const raw = (srcLines[lineIndex] || '').replace(/[\r\t]/g, '').trimStart()
+    return raw.startsWith('.局部变量 ')
+      || raw.startsWith('.参数 ')
+      || raw.startsWith('.程序集变量 ')
+      || raw.startsWith('.程序集 ')
+      || raw.startsWith('.全局变量 ')
+      || raw.startsWith('.成员 ')
+      || raw.startsWith('.子程序 ')
+      || raw.startsWith('.DLL命令 ')
+  }, [currentText])
+
+  const canUseClassNameCompletion = useCallback((lineIndex: number, fieldIdx: number): boolean => {
+    if (fieldIdx !== 1) return false
+    const srcLines = currentText.split('\n')
+    const raw = (srcLines[lineIndex] || '').replace(/[\r\t]/g, '').trimStart()
+    return raw.startsWith('.程序集 ')
+  }, [currentText])
 
   // 加载所有命令（用于补全），含流程关键字
   const reloadCommands = useCallback(() => {
     window.api.library.getAllCommands().then((cmds: CompletionItem[]) => {
       const seen = new Set<string>()
+      const constantSeen = new Set<string>()
       const mapCmd = (c: CompletionItem) => ({
         name: c.name,
         englishName: c.englishName || '',
@@ -1537,6 +1669,32 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
         .filter((c: CompletionItem & { isHidden?: boolean; isMember?: boolean }) => !c.isHidden && c.isMember)
         .map(mapCmd)
       memberCommandsRef.current = memberItems
+
+      // 支持库常量候选：优先识别“常量”类别，其次识别以 # 开头的名称
+      const libConstantItems: CompletionItem[] = cmds
+        .filter((c: CompletionItem & { isHidden?: boolean; category?: string; name?: string }) => {
+          if (c.isHidden) return false
+          const category = c.category || ''
+          const name = c.name || ''
+          return category.includes('常量') || name.startsWith('#')
+        })
+        .map(mapCmd)
+        .map((c) => {
+          const normalizedName = c.name.startsWith('#') ? c.name.slice(1) : c.name
+          return {
+            ...c,
+            name: normalizedName,
+            category: '支持库常量',
+          }
+        })
+        .filter(c => {
+          const key = c.name.trim()
+          if (!key || constantSeen.has(key)) return false
+          constantSeen.add(key)
+          return true
+        })
+      libraryConstantCompletionItemsRef.current = libConstantItems
+
       setCmdLoadId(n => n + 1)
     }).catch(() => {})
   }, [])
@@ -1548,6 +1706,59 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     return () => { window.api.off('library:loaded') }
   }, [reloadCommands])
 
+  // 从已加载支持库收集数据类型
+  useEffect(() => {
+    let cancelled = false
+    const loadLibraryMeta = async () => {
+      try {
+        const list = await window.api.library.getList() as Array<{ name: string; loaded?: boolean }>
+        const loadedLibs = (list || []).filter(lib => lib?.loaded !== false)
+        const detailList = await Promise.all(loadedLibs.map(lib => window.api.library.getInfo(lib.name))) as Array<{ name?: string; dataTypes?: Array<{ name?: string }>; constants?: Array<{ name?: string; englishName?: string; description?: string; value?: string }> } | null>
+        const names = new Set<string>()
+        const constants: Array<{ name: string; englishName: string; description: string; value: string; libraryName: string }> = []
+        const constSeen = new Set<string>()
+        for (let i = 0; i < detailList.length; i++) {
+          const detail = detailList[i]
+          const libName = (detail?.name || loadedLibs[i]?.name || '支持库').trim()
+          for (const dt of (detail?.dataTypes || [])) {
+            const name = (dt?.name || '').trim()
+            if (name) names.add(name)
+          }
+
+          for (const c of (detail?.constants || [])) {
+            const name = (c?.name || '').trim()
+            if (!name) continue
+            const key = name
+            if (constSeen.has(key)) continue
+            constSeen.add(key)
+            constants.push({
+              name,
+              englishName: (c?.englishName || '').trim(),
+              description: (c?.description || '').trim(),
+              value: (c?.value || '').trim(),
+              libraryName: libName,
+            })
+          }
+        }
+        if (!cancelled) {
+          setLibraryDataTypeNames([...names])
+          setLibraryConstants(constants)
+        }
+      } catch {
+        if (!cancelled) {
+          setLibraryDataTypeNames([])
+          setLibraryConstants([])
+        }
+      }
+    }
+    void loadLibraryMeta()
+    window.api.on('library:loaded', loadLibraryMeta)
+    return () => {
+      cancelled = true
+      window.api.off('library:loaded')
+    }
+  }, [])
+
   // 确保选中项始终可见
   useEffect(() => {
     if (acVisible && acListRef.current) {
@@ -1558,21 +1769,43 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
 
   /** 根据光标位置的"词"更新补全列表 */
   const updateCompletion = useCallback((val: string, cursorPos: number) => {
-    // 仅在代码行编辑模式下触发补全
-    if (!editCell || editCell.cellIndex >= 0) { setAcVisible(false); return }
+    if (!editCell) { setAcVisible(false); return }
+    const isCodeEdit = editCell.cellIndex < 0
+    const isClassNameCellEdit = editCell.cellIndex >= 0 && canUseClassNameCompletion(editCell.lineIndex, editCell.fieldIdx)
+    const isTypeCellEdit = editCell.cellIndex >= 0 && canUseTypeCompletion(editCell.lineIndex, editCell.fieldIdx)
+    if (!isCodeEdit && !isTypeCellEdit) { setAcVisible(false); return }
 
     // 向前找当前输入词的起始位置（中文/英文/下划线连续字符）
     let wordStart = cursorPos
     while (wordStart > 0 && /[\u4e00-\u9fa5A-Za-z0-9_]/.test(val[wordStart - 1])) wordStart--
-    const word = val.slice(wordStart, cursorPos)
+    let word = val.slice(wordStart, cursorPos)
+    let hashMode = false
 
-    if (word.length === 0) { setAcVisible(false); return }
+    if (wordStart > 0 && val[wordStart - 1] === '#') {
+      hashMode = true
+    }
+
+    if (!isTypeCellEdit && !isClassNameCellEdit && !hashMode && word.length === 0) { setAcVisible(false); return }
 
     acWordStartRef.current = wordStart
+    acPrefixRef.current = hashMode ? '#' : ''
 
     // 检查是否在"组件名."后面 → 显示成员命令
-    let sourceList: CompletionItem[] = [...userVarCompletionItemsRef.current, ...allCommandsRef.current]
-    if (wordStart > 0 && val[wordStart - 1] === '.') {
+    let sourceList: CompletionItem[] = [...userVarCompletionItemsRef.current, ...dllCompletionItemsRef.current, ...allCommandsRef.current]
+    if (isClassNameCellEdit) {
+      sourceList = [...classNameCompletionItemsRef.current]
+    } else if (isTypeCellEdit) {
+      sourceList = [...typeCompletionItemsRef.current]
+    } else if (hashMode) {
+      const merged = [...constantCompletionItemsRef.current, ...libraryConstantCompletionItemsRef.current]
+      const seen = new Set<string>()
+      sourceList = merged.filter(item => {
+        const key = item.name.trim()
+        if (!key || seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+    } else if (wordStart > 0 && val[wordStart - 1] === '.') {
       // 提取点号前的组件名
       let objEnd = wordStart - 1
       let objStart = objEnd
@@ -1588,14 +1821,53 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     }
 
     // 过滤并排序
-    const matches = sourceList
-      .map(cmd => ({ cmd, score: matchScore(word, cmd.name, cmd.englishName) }))
+    const fullMatches: AcDisplayItem[] = sourceList
+      .map(cmd => ({
+        cmd,
+        score: isClassNameCellEdit
+          ? (word.length === 0
+            ? (cmd.name.length > 0 ? 1 : 0)
+            : matchScore(word, cmd.name, cmd.englishName))
+          : isTypeCellEdit
+          ? (word.length === 0
+            ? (cmd.name.length > 0 ? 1 : 0)
+            : matchScore(word, cmd.name, cmd.englishName))
+          : hashMode
+          ? (word.length === 0
+            ? (cmd.name.length > 0 ? 1 : 0)
+            : (cmd.name.includes(word) ? (1000 - cmd.name.length) : 0))
+          : matchScore(word, cmd.name, cmd.englishName)
+      }))
       .filter(m => m.score > 0)
       .sort((a, b) => b.score - a.score || a.cmd.name.length - b.cmd.name.length)
-      .slice(0, 30)
-      .map(m => ({ cmd: m.cmd, engMatch: isEnglishMatch(word, m.cmd.englishName) && !m.cmd.name.includes(word) }))
+      .map(m => ({ cmd: m.cmd, engMatch: !isTypeCellEdit && !isClassNameCellEdit && !hashMode && isEnglishMatch(word, m.cmd.englishName) && !m.cmd.name.includes(word) }))
 
-    if (matches.length === 0) { setAcVisible(false); return }
+    if (fullMatches.length === 0) { setAcVisible(false); return }
+
+    let matches = fullMatches
+    if (fullMatches.length > AC_PAGE_SIZE) {
+      const hiddenItems = fullMatches.slice(AC_PAGE_SIZE)
+      matches = [
+        ...fullMatches.slice(0, AC_PAGE_SIZE),
+        {
+          cmd: {
+            name: '...',
+            englishName: '',
+            description: '双击显示剩余项',
+            returnType: '',
+            category: '补全提示',
+            libraryName: '',
+            isMember: false,
+            ownerTypeName: '',
+            params: [],
+          },
+          engMatch: false,
+          isMore: true,
+          remainCount: hiddenItems.length,
+          hiddenItems,
+        },
+      ]
+    }
 
     // 计算弹窗位置
     if (inputRef.current) {
@@ -1618,27 +1890,38 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     setAcItems(matches)
     setAcIndex(0)
     setAcVisible(true)
-  }, [editCell])
+  }, [editCell, canUseTypeCompletion, canUseClassNameCompletion])
 
   /** 应用补全项：替换当前输入词为命令名 */
   const applyCompletion = useCallback((displayItem: AcDisplayItem) => {
+    if (displayItem.isMore) return
     const item = displayItem.cmd
     const wordStart = acWordStartRef.current
+    const prefix = acPrefixRef.current
     const cursorPos = inputRef.current?.selectionStart ?? editVal.length
-    const before = editVal.slice(0, wordStart)
+    const before = editVal.slice(0, prefix ? Math.max(0, wordStart - 1) : wordStart)
     const after = editVal.slice(cursorPos)
-    const newVal = before + item.name + after
+    const newVal = before + prefix + item.name + after
     setEditVal(newVal)
     setAcVisible(false)
     setTimeout(() => {
       if (inputRef.current) {
-        const newPos = wordStart + item.name.length
+        const newPos = before.length + prefix.length + item.name.length
         inputRef.current.selectionStart = newPos
         inputRef.current.selectionEnd = newPos
         inputRef.current.focus()
       }
     }, 0)
   }, [editVal])
+
+  const expandMoreCompletion = useCallback((index: number) => {
+    setAcItems(prev => {
+      const item = prev[index]
+      if (!item || !item.isMore || !item.hiddenItems || item.hiddenItems.length === 0) return prev
+      return [...prev.slice(0, index), ...item.hiddenItems]
+    })
+    setAcIndex(index)
+  }, [])
 
   /** 代码行编辑结束时自动补全括号（格式化命令），返回 [主行, ...需要插入的后续行] */
   const formatCommandLine = useCallback((val: string): string[] => {
@@ -1662,7 +1945,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     // 流程控制命令自动补齐后续行
     const autoLines = FLOW_AUTO_COMPLETE[cmdName]
     if (autoLines) {
-      const cmd = allCommandsRef.current.find(c => c.name === cmdName)
+      const cmd = allCommandsRef.current.find(c => c.name === cmdName) || dllCompletionItemsRef.current.find(c => c.name === cmdName)
       // 命令本身和内部代码行都缩进4空格（两个汉字宽度）给流程线留空间
       const innerPrefix = prefix + '    '
       let mainLine: string
@@ -1697,7 +1980,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     if (!m) return [val]
 
     if (trimmed.startsWith('.')) return [val]
-    const cmd = allCommandsRef.current.find(c => c.name === cmdName)
+    const cmd = allCommandsRef.current.find(c => c.name === cmdName) || dllCompletionItemsRef.current.find(c => c.name === cmdName)
     if (!cmd) return [val]
 
     if (cmd.params.length === 0) {
@@ -1712,9 +1995,39 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
   }, [value])
 
   const lines = useMemo(() => currentText.split('\n'), [currentText])
+  const parsedLines = useMemo(() => parseLines(currentText), [currentText])
+
+  const findOwnerSubName = useCallback((lineIndex: number): string => {
+    for (let i = lineIndex; i >= 0; i--) {
+      const ln = parsedLines[i]
+      if (ln?.type === 'sub') return (ln.fields[0] || '').trim()
+    }
+    return ''
+  }, [parsedLines])
+
+  const handleTableCellHint = useCallback((lineIndex: number, fieldIdx: number, cellText: string): void => {
+    if (!onCommandClick || fieldIdx < 0) return
+    const ln = parsedLines[lineIndex]
+    if (!ln) return
+    const val = (cellText || '').replace(/\u00A0/g, '').trim()
+    if (!val) return
+
+    if (fieldIdx === 1 && (ln.type === 'subParam' || ln.type === 'localVar' || ln.type === 'globalVar' || ln.type === 'assemblyVar' || ln.type === 'dataTypeMember' || ln.type === 'dll' || ln.type === 'sub' || ln.type === 'assembly')) {
+      onCommandClick(`__TYPE__:${val}`)
+      return
+    }
+
+    if (fieldIdx === 0 && ln.type === 'subParam') {
+      const paramName = val
+      const paramType = (ln.fields[1] || '').trim()
+      const ownerSub = findOwnerSubName(lineIndex)
+      onCommandClick(`__PARAM__:${paramName}:${paramType}:${ownerSub}`)
+    }
+  }, [findOwnerSubName, onCommandClick, parsedLines])
+
   const blocks = useMemo<RenderBlock[]>(() => {
     try {
-      return buildBlocks(currentText)
+      return buildBlocks(currentText, isClassModule)
     } catch (error) {
       console.error('[EycTableEditor] buildBlocks failed, fallback to line blocks', error)
       return currentText.split('\n').map((line, idx): RenderBlock => ({
@@ -1735,26 +2048,30 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     }
   }, [blocks])
 
-  // 只对实际渲染的可见行按顺序分配连续行号（跳过 isHeader / isVirtual）
-  const lineNumMap = useMemo<Map<number, number>>(() => {
-    const map = new Map<number, number>()
+  // 对实际渲染的可见行按顺序分配连续行号（跳过 isHeader / isVirtual）
+  // 注意：表格内可能存在多个可见行映射到同一源码 lineIndex（如 DLL 命令块），
+  // 行号显示应按“可见行”递增，而不是按源码行号去重。
+  const lineNumMaps = useMemo(() => {
+    const tableRowNumMap = new Map<string, number>()
+    const codeLineNumMap = new Map<number, number>()
     let display = 0
-    for (const blk of blocks) {
+    for (let bi = 0; bi < blocks.length; bi++) {
+      const blk = blocks[bi]
       if (blk.kind === 'table') {
-        for (const row of blk.rows) {
-          if (!row.isHeader && !map.has(row.lineIndex)) {
-            display++
-            map.set(row.lineIndex, display)
-          }
+        for (let ri = 0; ri < blk.rows.length; ri++) {
+          const row = blk.rows[ri]
+          if (row.isHeader) continue
+          display++
+          tableRowNumMap.set(`${bi}:${ri}`, display)
         }
       } else {
-        if (!blk.isVirtual && !map.has(blk.lineIndex)) {
+        if (!blk.isVirtual) {
           display++
-          map.set(blk.lineIndex, display)
+          codeLineNumMap.set(blk.lineIndex, display)
         }
       }
     }
-    return map
+    return { tableRowNumMap, codeLineNumMap }
   }, [blocks])
 
   const getSelectedSourceText = useCallback((): string => {
@@ -1858,16 +2175,234 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     userVarCompletionItemsRef.current = userVarCompletionItems
   }, [userVarCompletionItems])
 
+  const constantCompletionItems = useMemo<CompletionItem[]>(() => {
+    const parsed = parseLines(currentText)
+    const items: CompletionItem[] = []
+    const seen = new Set<string>()
+
+    const addConstant = (name: string, constantValue: string, englishName = '', description = '', libraryName = '用户定义'): void => {
+      const nm = (name || '').trim()
+      if (!nm || seen.has(nm)) return
+      seen.add(nm)
+      const val = (constantValue || '').trim()
+      const desc = description.trim()
+      items.push({
+        name: nm,
+        englishName: (englishName || '').trim(),
+        description: desc || (val ? `常量（值：${val}）` : '常量'),
+        returnType: '',
+        category: '常量',
+        libraryName,
+        isMember: false,
+        ownerTypeName: '',
+        params: [],
+      })
+    }
+
+    for (const ln of parsed) {
+      if (ln.type === 'constant' && ln.fields[0]) {
+        addConstant(ln.fields[0], ln.fields[1] || '')
+      }
+    }
+
+    for (const c of projectConstants) {
+      addConstant(c.name, c.value || '')
+    }
+
+    for (const c of libraryConstants) {
+      addConstant(c.name, c.value || '', c.englishName || '', c.description || '', c.libraryName || '支持库')
+    }
+
+    return items
+  }, [currentText, projectConstants, libraryConstants])
+
+  useEffect(() => {
+    constantCompletionItemsRef.current = constantCompletionItems
+  }, [constantCompletionItems])
+
+  const dllCompletionItems = useMemo<CompletionItem[]>(() => {
+    const parsed = parseLines(currentText)
+    const items: CompletionItem[] = []
+    const seen = new Set<string>()
+
+    const addDll = (name: string, returnType: string, description: string, params: CompletionParam[]) => {
+      const nm = (name || '').trim()
+      if (!nm || seen.has(nm)) return
+      seen.add(nm)
+      items.push({
+        name: nm,
+        englishName: '',
+        description: description || (returnType ? `DLL命令（返回：${returnType}）` : 'DLL命令'),
+        returnType: returnType || '',
+        category: 'DLL命令',
+        libraryName: '用户定义',
+        isMember: false,
+        ownerTypeName: '',
+        params: (params || []).map(p => ({
+          name: p.name,
+          type: p.type,
+          description: p.description || '',
+          optional: !!p.optional,
+          isVariable: !!p.isVariable,
+          isArray: !!p.isArray,
+        })),
+      })
+    }
+
+    // 当前文档内的 DLL 命令
+    const currentDocDllMap = new Map<string, { returnType: string; description: string; params: CompletionParam[] }>()
+    let currentDllName = ''
+    for (const ln of parsed) {
+      if (ln.type === 'dll') {
+        const name = (ln.fields[0] || '').trim()
+        if (!name) {
+          currentDllName = ''
+          continue
+        }
+        currentDllName = name
+        if (!currentDocDllMap.has(name)) {
+          currentDocDllMap.set(name, {
+            returnType: (ln.fields[1] || '').trim(),
+            description: ln.fields.length > 5 ? ln.fields.slice(5).join(', ').trim() : '',
+            params: [],
+          })
+        }
+        continue
+      }
+
+      if (ln.type === 'sub') {
+        currentDllName = ''
+        continue
+      }
+
+      if (ln.type === 'subParam' && currentDllName) {
+        const target = currentDocDllMap.get(currentDllName)
+        if (!target) continue
+        const flags = (ln.fields[2] || '').trim()
+        target.params.push({
+          name: (ln.fields[0] || '').trim(),
+          type: (ln.fields[1] || '').trim(),
+          description: ln.fields.length > 3 ? ln.fields.slice(3).join(', ').trim() : '',
+          optional: flags.includes('可空'),
+          isVariable: flags.includes('传址'),
+          isArray: flags.includes('数组'),
+        })
+      }
+    }
+
+    for (const [name, meta] of currentDocDllMap.entries()) {
+      addDll(name, meta.returnType, meta.description, meta.params)
+    }
+
+    // 项目级 DLL 命令（来自 .ell 与其他已打开标签页）
+    for (const c of projectDllCommands) {
+      addDll(c.name, c.returnType || '', c.description || '', c.params || [])
+    }
+
+    return items
+  }, [currentText, projectDllCommands])
+
+  useEffect(() => {
+    dllCompletionItemsRef.current = dllCompletionItems
+  }, [dllCompletionItems])
+
+  const typeCompletionItems = useMemo<CompletionItem[]>(() => {
+    const items: CompletionItem[] = []
+    const seen = new Set<string>()
+
+    const addType = (name: string, category: string, englishName = '', description?: string) => {
+      const nm = (name || '').trim()
+      if (!nm || seen.has(nm)) return
+      seen.add(nm)
+      items.push({
+        name: nm,
+        englishName,
+        description: description || category,
+        returnType: '',
+        category,
+        libraryName: '用户定义',
+        isMember: false,
+        ownerTypeName: '',
+        params: [],
+      })
+    }
+
+    // 基础数据类型始终可用，不依赖支持库数据类型列表
+    for (const t of BUILTIN_TYPE_ITEMS) addType(t.name, '基础数据类型', t.englishName, t.description)
+
+    for (const t of libraryDataTypeNames) addType(t, '支持库数据类型')
+
+    const parsed = parseLines(currentText)
+    for (const ln of parsed) {
+      if (ln.type === 'dataType' && ln.fields[0]) {
+        addType(ln.fields[0], '自定义数据类型')
+      }
+    }
+
+    for (const dt of projectDataTypes) {
+      addType(dt.name, '自定义数据类型')
+    }
+
+    // 项目类模块中的类名也可作为返回值类型/数据类型使用
+    for (const c of projectClassNames) {
+      addType(c.name, '项目类名')
+    }
+
+    return items
+  }, [currentText, libraryDataTypeNames, projectDataTypes, projectClassNames])
+
+  useEffect(() => {
+    typeCompletionItemsRef.current = typeCompletionItems
+  }, [typeCompletionItems])
+
+  const classNameCompletionItems = useMemo<CompletionItem[]>(() => {
+    const items: CompletionItem[] = []
+    const seen = new Set<string>()
+
+    const addClass = (name: string) => {
+      const nm = (name || '').trim()
+      if (!nm || seen.has(nm)) return
+      seen.add(nm)
+      items.push({
+        name: nm,
+        englishName: '',
+        description: '项目类模块',
+        returnType: '',
+        category: '类名',
+        libraryName: '用户定义',
+        isMember: false,
+        ownerTypeName: '',
+        params: [],
+      })
+    }
+
+    const parsed = parseLines(currentText)
+    for (const ln of parsed) {
+      if (ln.type === 'assembly' && ln.fields[0]) {
+        addClass(ln.fields[0])
+      }
+    }
+
+    for (const c of projectClassNames) addClass(c.name)
+
+    return items
+  }, [currentText, projectClassNames])
+
+  useEffect(() => {
+    classNameCompletionItemsRef.current = classNameCompletionItems
+  }, [classNameCompletionItems])
+
   // 有效命令名集合（支持库命令 + 用户子程序 + 流程关键字 + 变量名）
   const validCommandNames = useMemo(() => {
     const s = new Set<string>()
     for (const c of allCommandsRef.current) s.add(c.name)
+    for (const c of dllCompletionItemsRef.current) s.add(c.name)
     for (const n of userSubNames) s.add(n)
     for (const n of allKnownVarNames) s.add(n)
     for (const k of FLOW_KW) s.add(k)
     return s
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userSubNames, allKnownVarNames, cmdLoadId])
+  }, [userSubNames, allKnownVarNames, cmdLoadId, dllCompletionItems])
 
   const missingRhsLineSet = useMemo(() => {
     const set = new Set<number>()
@@ -1878,6 +2413,19 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     }
     return set
   }, [blocks])
+
+  const invalidVarNameLineSet = useMemo(() => {
+    const set = new Set<number>()
+    const parsed = parseLines(currentText)
+    for (let i = 0; i < parsed.length; i++) {
+      const ln = parsed[i]
+      if (ln.type === 'localVar' || ln.type === 'assemblyVar' || ln.type === 'globalVar' || ln.type === 'subParam') {
+        const name = (ln.fields[0] || '').trim()
+        if (name && !isValidVariableLikeName(name)) set.add(i)
+      }
+    }
+    return set
+  }, [currentText])
 
   // 计算问题列表（无效命令 + 变量名冲突）
   useEffect(() => {
@@ -1945,6 +2493,9 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       if (ln.type === 'assemblyVar') {
         const name = ln.fields[0]
         if (name) {
+          if (!isValidVariableLikeName(name)) {
+            problems.push({ line: i + 1, column: 1, message: `变量名"${name}"不能以数字或特殊符号开头`, severity: 'error' })
+          }
           if (assemblyVars.has(name)) {
             problems.push({ line: i + 1, column: 1, message: `程序集变量"${name}"重复定义`, severity: 'error' })
           } else {
@@ -1954,6 +2505,9 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       } else if (ln.type === 'globalVar') {
         const name = ln.fields[0]
         if (name) {
+          if (!isValidVariableLikeName(name)) {
+            problems.push({ line: i + 1, column: 1, message: `变量名"${name}"不能以数字或特殊符号开头`, severity: 'error' })
+          }
           if (globalVars.has(name)) {
             problems.push({ line: i + 1, column: 1, message: `全局变量"${name}"重复定义`, severity: 'error' })
           } else {
@@ -1969,9 +2523,17 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       } else if (ln.type === 'localVar') {
         const name = ln.fields[0]
         if (name) {
+          if (!isValidVariableLikeName(name)) {
+            problems.push({ line: i + 1, column: 1, message: `变量名"${name}"不能以数字或特殊符号开头`, severity: 'error' })
+          }
           const arr = localVarsByName.get(name)
           if (arr) arr.push(i)
           else localVarsByName.set(name, [i])
+        }
+      } else if (ln.type === 'subParam') {
+        const name = ln.fields[0]
+        if (name && !isValidVariableLikeName(name)) {
+          problems.push({ line: i + 1, column: 1, message: `参数名"${name}"不能以数字或特殊符号开头`, severity: 'error' })
         }
       }
     }
@@ -1988,14 +2550,17 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     // 如果补全弹窗可见且输入词完全匹配命令名，自动上屏
     let effectiveVal = overrideVal !== undefined ? overrideVal : editVal
     if (overrideVal === undefined && acVisibleRef.current && acItemsRef.current.length > 0) {
-      const item = acItemsRef.current[0].cmd
-      const wordStart = acWordStartRef.current
-      const cursorPos = inputRef.current?.selectionStart ?? effectiveVal.length
-      const typedWord = effectiveVal.slice(wordStart, cursorPos)
-      if (typedWord === item.name) {
-        const before = effectiveVal.slice(0, wordStart)
-        const after = effectiveVal.slice(cursorPos)
-        effectiveVal = before + item.name + after
+      const firstItem = acItemsRef.current[0]
+      if (!firstItem.isMore) {
+        const item = firstItem.cmd
+        const wordStart = acWordStartRef.current
+        const cursorPos = inputRef.current?.selectionStart ?? effectiveVal.length
+        const typedWord = effectiveVal.slice(wordStart, cursorPos)
+        if (typedWord === item.name) {
+          const before = effectiveVal.slice(0, wordStart)
+          const after = effectiveVal.slice(cursorPos)
+          effectiveVal = before + item.name + after
+        }
       }
     }
 
@@ -2172,11 +2737,20 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
           }
         }
       }
+
+      // 类模块程序集名重命名：提交后回调给上层执行文件/项目同步
+      if (isClassModule && trimmedRaw.startsWith('.程序集 ')) {
+        const oldClassName = editCellOrigValRef.current.trim()
+        const newClassName = effectiveVal.trim()
+        if (oldClassName && newClassName && oldClassName !== newClassName) {
+          onClassNameRename?.(oldClassName, newClassName)
+        }
+      }
     }
 
     const nt = nl.join('\n')
     setCurrentText(nt); prevRef.current = nt; onChange(nt); setEditCell(null)
-  }, [editCell, editVal, lines, onChange])
+  }, [editCell, editVal, isClassModule, lines, onChange, onClassNameRename])
 
   // 每次渲染后重置 commitGuard，允许下一次合法的 commit 调用
   useEffect(() => { commitGuardRef.current = false })
@@ -2227,8 +2801,14 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     const initVal = cellText === '\u00A0' ? '' : (cellText || '')
     editCellOrigValRef.current = initVal
     setEditVal(initVal)
-    setTimeout(() => { inputRef.current?.focus() }, 0)
-  }, [pushUndo])
+    setTimeout(() => {
+      inputRef.current?.focus()
+      if (canUseTypeCompletion(li, fieldIdx)) {
+        const pos = inputRef.current?.selectionStart ?? initVal.length
+        updateCompletion(initVal, pos)
+      }
+    }, 0)
+  }, [pushUndo, canUseTypeCompletion, updateCompletion])
 
   const startEditLine = useCallback((li: number, clientX?: number, containerLeft?: number, isVirtual?: boolean) => {
     // 使用 prevRef 获取最新行数据，防止 commit 修改文本后 React 尚未重渲染导致闭包中 lines 过时
@@ -2246,7 +2826,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     let flowIndent = ''
     if (!flowMark && !isVirtual) {
       // 若 commit 刚修改了文本但尚未重渲染，flowLines 可能过时，需重新计算
-      const currentFlowLines = (latestText === currentText) ? flowLines : computeFlowLines(buildBlocks(latestText))
+      const currentFlowLines = (latestText === currentText) ? flowLines : computeFlowLines(buildBlocks(latestText, isClassModule))
       const segs = currentFlowLines.map.get(li) || []
       if (segs.length > 0) {
         const lineMaxDepth = Math.max(...segs.map(s => s.depth)) + 1
@@ -2276,7 +2856,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       if (clientX !== undefined && containerLeft !== undefined) {
         let relX = clientX - containerLeft // 相对于代码行内容区域
         // 减去流程线段占用的宽度，使光标定位到输入框内正确位置
-        const currentFlowLines2 = (latestText === currentText) ? flowLines : computeFlowLines(buildBlocks(latestText))
+        const currentFlowLines2 = (latestText === currentText) ? flowLines : computeFlowLines(buildBlocks(latestText, isClassModule))
         const segs2 = currentFlowLines2.map.get(li) || []
         if (segs2.length > 0) {
           const lineMaxDepth2 = Math.max(...segs2.map(s => s.depth)) + 1
@@ -2326,12 +2906,16 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       if (e.key === ' ') {
         // 空格键：选中当前补全项上屏
         e.preventDefault()
-        applyCompletion(acItems[acIndex])
+        const target = acItems[acIndex]
+        if (target?.isMore) expandMoreCompletion(acIndex)
+        else applyCompletion(target)
         return
       }
       if (e.key === 'Tab') {
         e.preventDefault()
-        applyCompletion(acItems[acIndex])
+        const target = acItems[acIndex]
+        if (target?.isMore) expandMoreCompletion(acIndex)
+        else applyCompletion(target)
         return
       }
       if (e.key === 'Escape') {
@@ -2744,6 +3328,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
         const stripped = rawLine.replace(/[\r\t]/g, '').trimStart()
         const rowTemplates: [string, string][] = [
           ['.子程序 ', '    .参数 , 整数型'],
+          ['.DLL命令 ', '    .参数 , 整数型'],
           ['.程序集 ', '.程序集变量 , 整数型'],
           ['.程序集变量 ', '.程序集变量 , 整数型'],
           ['.局部变量 ', '.局部变量 , 整数型'],
@@ -2795,6 +3380,15 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                   if (!tt || tt.startsWith("'") || tt.startsWith('.')) continue
                   nl[j] = nl[j].replace(nrx, nName)
                 }
+              }
+            }
+
+            // 类模块程序集名重命名：回车提交分支也触发同步
+            if (isClassModule && trimmedOrig.startsWith('.程序集 ')) {
+              const oName = editCellOrigValRef.current.trim()
+              const nName = editVal.trim()
+              if (oName && nName && oName !== nName) {
+                onClassNameRename?.(oName, nName)
               }
             }
           }
@@ -3056,6 +3650,55 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       }, 50)
     },
 
+    insertConstant: () => {
+      const curLines = currentText.split('\n')
+
+      // 生成不重复的常量名
+      const existingNames = new Set<string>()
+      for (const ln of curLines) {
+        const t = ln.replace(/[\r\t]/g, '').trim()
+        if (t.startsWith('.常量 ')) {
+          const name = splitCSV(t.slice('.常量 '.length))[0]
+          if (name) existingNames.add(name)
+        }
+      }
+      let num = 1
+      while (existingNames.has('常量' + num)) num++
+      const newName = '常量' + num
+
+      // 默认插入到首个子程序前；若已有常量/全局变量则追加到其后
+      let firstSub = curLines.findIndex(ln => ln.replace(/[\r\t]/g, '').trim().startsWith('.子程序 '))
+      if (firstSub < 0) firstSub = curLines.length
+
+      let insertAt = firstSub
+      let lastConstant = -1
+      let lastGlobal = -1
+      for (let i = 0; i < firstSub; i++) {
+        const t = curLines[i].replace(/[\r\t]/g, '').trim()
+        if (t.startsWith('.常量 ')) lastConstant = i
+        if (t.startsWith('.全局变量 ')) lastGlobal = i
+      }
+      if (lastConstant >= 0) insertAt = lastConstant + 1
+      else if (lastGlobal >= 0) insertAt = lastGlobal + 1
+
+      pushUndo(currentText)
+      const nl = [...curLines]
+      nl.splice(insertAt, 0, '.常量 ' + newName + ', 0')
+      const nt = nl.join('\n')
+      setCurrentText(nt); prevRef.current = nt; onChange(nt)
+
+      // 自动进入名称编辑
+      lastFocusedLine.current = insertAt
+      setEditCell({ lineIndex: insertAt, cellIndex: 0, fieldIdx: 0, sliceField: false })
+      setEditVal(newName)
+      setTimeout(() => {
+        const el = wrapperRef.current?.querySelector<HTMLElement>(`[data-line-index="${insertAt}"]`)
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        inputRef.current?.focus()
+        inputRef.current?.select()
+      }, 50)
+    },
+
     navigateOrCreateSub: (subName: string, params: Array<{ name: string; dataType: string; isByRef: boolean }>) => {
       const curLines = currentText.split('\n')
 
@@ -3134,7 +3777,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     const spans = colorize(codeLine)
     for (const s of spans) {
       if ((s.cls === 'funccolor' || s.cls === 'comecolor') && validCommandNames.has(s.text)) {
-        const cmd = allCommandsRef.current.find(c => c.name === s.text)
+        const cmd = allCommandsRef.current.find(c => c.name === s.text) || dllCompletionItemsRef.current.find(c => c.name === s.text)
         if (cmd && cmd.params.length > 0) return cmd
         // 内置流程关键字可能不在 allCommandsRef 中，对有参数的流程尾命令做兜底
         if (s.text === '循环判断尾') {
@@ -3450,18 +4093,32 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       >
         {blocks.map((blk, bi) => {
           if (blk.kind === 'table') {
-            // 表格行中所有数据行的行号
             const tableLineIndices = blk.rows.filter(r => !r.isHeader).map(r => r.lineIndex)
-            const tableSelected = tableLineIndices.some(li => selectedLines.has(li))
             return (
-              <div key={bi} className={`eyc-block-row${tableSelected ? ' eyc-line-selected' : ''}`}
-                data-line-index={tableLineIndices[0] ?? blk.lineIndex}
-                onMouseDown={(e) => handleLineMouseDown(e, tableLineIndices[0] ?? blk.lineIndex)}
+              <div
+                key={bi}
+                className="eyc-block-row"
+                onMouseDown={(e) => {
+                  // 单元格/行内点击由 tr 处理；这里只兜底处理表格外区域（行号区、空白区）
+                  const target = e.target as HTMLElement
+                  if (target.closest('tr.eyc-data-row') || target.closest('input')) return
+                  const byY = findLineAtY(e.clientY)
+                  if (byY >= 0) {
+                    handleLineMouseDown(e, byY)
+                    return
+                  }
+                  if (tableLineIndices.length > 0) {
+                    handleLineMouseDown(e, tableLineIndices[0])
+                  }
+                }}
               >
                 <div className="eyc-line-gutter">
                   {blk.rows.map((row, ri) => (
-                    <div key={ri} className="eyc-gutter-cell">
-                      <span className="eyc-gutter-linenum">{row.isHeader ? '' : (lineNumMap.get(row.lineIndex) ?? row.lineIndex + 1)}</span>
+                    <div
+                      key={ri}
+                      className={row.isHeader ? 'eyc-gutter-cell' : `eyc-gutter-cell${selectedLines.has(row.lineIndex) ? ' eyc-line-selected' : ''}`}
+                    >
+                      <span className="eyc-gutter-linenum">{row.isHeader ? '' : (lineNumMaps.tableRowNumMap.get(`${bi}:${ri}`) ?? row.lineIndex + 1)}</span>
                       <span className="eyc-gutter-fold-area" />
                     </div>
                   ))}
@@ -3472,25 +4129,37 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                       {blk.rows.map((row, ri) => (
                         <tr
                           key={ri}
-                          className={row.isHeader ? 'eyc-hdr-row' : 'eyc-data-row'}
+                          className={row.isHeader ? 'eyc-hdr-row' : `eyc-data-row${selectedLines.has(row.lineIndex) ? ' eyc-line-selected' : ''}`}
                           {...(!row.isHeader ? { 'data-line-index': row.lineIndex } : {})}
+                          onMouseDown={row.isHeader ? undefined : (e) => {
+                            e.stopPropagation()
+                            handleLineMouseDown(e, row.lineIndex)
+                          }}
                         >
                       {row.cells.map((cell, ci) => (
+                        (() => {
+                          const isInvalidVarNameCell = !row.isHeader && cell.fieldIdx === 0 && invalidVarNameLineSet.has(row.lineIndex)
+                          return (
                         <td
                           key={ci}
-                          className={`${cell.cls} Rowheight`}
+                          className={`${cell.cls} Rowheight${isInvalidVarNameCell ? ' eyc-cell-invalid' : ''}`}
                           colSpan={cell.colSpan}
                           style={cell.align ? { textAlign: cell.align as 'center' } : undefined}
-                          onClick={() => !row.isHeader && startEditCell(row.lineIndex, ci, cell.text, cell.fieldIdx, cell.sliceField)}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            if (row.isHeader) return
+                            handleTableCellHint(row.lineIndex, cell.fieldIdx ?? -1, cell.text)
+                            startEditCell(row.lineIndex, ci, cell.text, cell.fieldIdx, cell.sliceField)
+                          }}
                         >
-                          {editCell && editCell.lineIndex === row.lineIndex && editCell.cellIndex === ci && !row.isHeader ? (
+                          {editCell && editCell.lineIndex === row.lineIndex && editCell.cellIndex === ci && editCell.fieldIdx === cell.fieldIdx && !row.isHeader ? (
                             <div style={{ position: 'relative', display: 'inline-grid' }}>
                               <span style={{ gridArea: '1/1', visibility: 'hidden', whiteSpace: 'pre', font: 'inherit', padding: 0 }}>
                                 {(editVal.length > (cell.text || '\u00A0').length ? editVal : (cell.text || '\u00A0')) + '\u00A0'}
                               </span>
                               <input
                                 ref={inputRef}
-                                className="eyc-cell-input"
+                                className={`eyc-cell-input${isInvalidVarNameCell ? ' eyc-input-invalid' : ''}`}
                                 style={{ gridArea: '1/1' }}
                                 value={editVal}
                                 onMouseDown={(e) => {
@@ -3498,7 +4167,13 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                                   // 记录起始位置；如果鼠标拖出 input 边界则切换为跳行拖选
                                   pendingInputDragRef.current = { lineIndex: row.lineIndex, x: e.clientX, y: e.clientY }
                                 }}
-                                onChange={e => { setEditVal(e.target.value); liveUpdate(e.target.value) }}
+                                onChange={e => {
+                                  const v = e.target.value
+                                  setEditVal(v)
+                                  liveUpdate(v)
+                                  const pos = e.target.selectionStart ?? v.length
+                                  updateCompletion(v, pos)
+                                }}
                                 onBlur={() => commit()}
                                 onKeyDown={onKey}
                                 spellCheck={false}
@@ -3508,6 +4183,8 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                             cell.text || '\u00A0'
                           )}
                         </td>
+                          )
+                        })()
                       ))}
                       </tr>
                     ))}
@@ -3535,7 +4212,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
             >
               <div className="eyc-line-gutter">
                 <div className="eyc-gutter-cell">
-                  <span className="eyc-gutter-linenum">{blk.isVirtual ? '' : (lineNumMap.get(blk.lineIndex) ?? blk.lineIndex + 1)}</span>
+                  <span className="eyc-gutter-linenum">{blk.isVirtual ? '' : (lineNumMaps.codeLineNumMap.get(blk.lineIndex) ?? blk.lineIndex + 1)}</span>
                   <span className="eyc-gutter-fold-area">
                     {lineCmd && (isLineSelected || (editCell && editCell.lineIndex === blk.lineIndex && editCell.paramIdx === undefined)) && (
                       <span
@@ -3718,19 +4395,40 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
           <div className="eyc-ac-popup" ref={acListRef}>
             {acItems.map((item, i) => (
               <div
-                key={item.cmd.name}
-                className={`eyc-ac-item ${i === acIndex ? 'eyc-ac-item-active' : ''}`}
+                key={`${item.cmd.name}_${i}`}
+                className={`eyc-ac-item ${i === acIndex ? 'eyc-ac-item-active' : ''}${item.isMore ? ' eyc-ac-item-more' : ''}`}
                 onMouseEnter={() => setAcIndex(i)}
-                onClick={() => applyCompletion(item)}
+                onClick={() => {
+                  if (item.isMore) return
+                  applyCompletion(item)
+                }}
+                onDoubleClick={() => {
+                  if (item.isMore) expandMoreCompletion(i)
+                }}
               >
-                <span className={`eyc-ac-icon ${getCmdIconClass(item.cmd.category)}`}>{getCmdIconLabel(item.cmd.category)}</span>
-                <span className="eyc-ac-name">{item.cmd.name}{item.engMatch && item.cmd.englishName ? `（${item.cmd.englishName}）` : ''}</span>
-                {item.cmd.returnType && <span className="eyc-ac-return">{item.cmd.returnType}</span>}
+                <span className={`eyc-ac-icon ${item.isMore ? 'eyc-ac-icon-flow' : getCmdIconClass(item.cmd.category)}`}>{item.isMore ? '…' : getCmdIconLabel(item.cmd.category)}</span>
+                <span className="eyc-ac-name">
+                  {item.isMore
+                    ? `...（双击显示剩余 ${item.remainCount || 0} 项）`
+                    : `${item.cmd.name}${item.engMatch && item.cmd.englishName ? `（${item.cmd.englishName}）` : ''}`}
+                </span>
+                {!item.isMore && item.cmd.category.includes('常量') && item.cmd.libraryName && (
+                  <span className="eyc-ac-source">{item.cmd.libraryName}</span>
+                )}
+                {!item.isMore && item.cmd.returnType && <span className="eyc-ac-return">{item.cmd.returnType}</span>}
               </div>
             ))}
           </div>
           {acItems[acIndex] && (() => {
-            const ci = acItems[acIndex].cmd
+            const selectedItem = acItems[acIndex]
+            if (selectedItem.isMore) {
+              return (
+                <div className="eyc-ac-detail">
+                  <div className="eyc-ac-detail-desc">双击列表最后一项“...”可展开显示剩余匹配项。</div>
+                </div>
+              )
+            }
+            const ci = selectedItem.cmd
             const paramSig = ci.params.length > 0
               ? ci.params.map(p => {
                   let s = ''

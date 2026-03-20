@@ -16,7 +16,7 @@ function registerEycLanguage(monaco: Monaco): void {
   // 注册语言
   monaco.languages.register({
     id: 'eyc',
-    extensions: ['.eyc', '.egv'],
+    extensions: ['.eyc', '.egv', '.ecs', '.edt', '.ell'],
     aliases: ['易语言源码', 'EYC', 'eyc'],
   })
 
@@ -200,9 +200,26 @@ export interface EditorHandle {
   upsertFile: (tab: EditorTab) => void
   insertDeclaration: () => void
   insertLocalVariable: () => void
+  insertConstant: () => void
   navigateToLine: (line: number) => void
   updateFormProperty: (targetKind: 'form' | 'control', controlId: string | null, propName: string, value: string | number | boolean) => void
   navigateToEventSub: (sel: SelectionTarget, eventName: string, eventArgs: Array<{ name: string; description: string; dataType: string; isByRef: boolean }>) => void
+}
+
+interface ProjectDllParam {
+  name: string
+  type: string
+  description: string
+  optional: boolean
+  isVariable: boolean
+  isArray: boolean
+}
+
+interface ProjectDllCommand {
+  name: string
+  returnType: string
+  description: string
+  params: ProjectDllParam[]
 }
 
 interface EycEditorErrorBoundaryProps {
@@ -243,6 +260,10 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
   const [eycFallbackTabs, setEycFallbackTabs] = useState<Record<string, true>>({})
   const [projectGlobalVars, setProjectGlobalVars] = useState<Array<{ name: string; type: string }>>([])
+  const [projectConstants, setProjectConstants] = useState<Array<{ name: string; value: string }>>([])
+  const [projectDllCommands, setProjectDllCommands] = useState<ProjectDllCommand[]>([])
+  const [projectDataTypes, setProjectDataTypes] = useState<Array<{ name: string }>>([])
+  const [projectClassNames, setProjectClassNames] = useState<Array<{ name: string }>>([])
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const eycEditorRef = useRef<EycTableEditorHandle | null>(null)
   const [windowUnits, setWindowUnits] = useState<LibWindowUnit[]>([])
@@ -262,12 +283,18 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
   }
 
   const getTabSaveContent = (tab: EditorTab): string => {
-    if (tab.language === 'eyc' || tab.language === 'egv') return eycToYiFormat(tab.value)
+    if (tab.language === 'eyc' || tab.language === 'egv' || tab.language === 'ecs' || tab.language === 'edt' || tab.language === 'ell') return eycToYiFormat(tab.value)
     return getTabPersistContent(tab)
   }
 
+  const syncSidebarByLanguage = useCallback((language?: string) => {
+    if (!language) return
+    if (language === 'efw') onSidebarTab?.('property')
+    else onSidebarTab?.('project')
+  }, [onSidebarTab])
+
   const normalizeIncomingTab = (tab: EditorTab): EditorTab => {
-    if (tab.language !== 'eyc' && tab.language !== 'egv') return tab
+    if (tab.language !== 'eyc' && tab.language !== 'egv' && tab.language !== 'ecs' && tab.language !== 'edt' && tab.language !== 'ell') return tab
     return {
       ...tab,
       value: eycToInternalFormat(tab.value),
@@ -375,16 +402,104 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
   }, [projectDir])
 
   // 窗口重命名：更新 .eyc 内容中所有引用模式
-  const applyWindowRenameToContent = (content: string, oldName: string, newName: string): string => {
+  const applyWindowRenameToContent = (content: string, oldName: string, newName: string, forceAssemblyName = false): string => {
     let result = content
     // 程序集名：窗口程序集_旧名 → 窗口程序集_新名
     result = result.split('窗口程序集_' + oldName).join('窗口程序集_' + newName)
+    // 兼容旧规则：若程序集名仍是“旧窗口名”，迁移为“窗口程序集_新窗口名”
+    if (forceAssemblyName) {
+      const escapedOldName = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const assemblyLineRe = new RegExp(
+        '^(\\s*\\.程序集\\s+)(窗口程序集_' + escapedOldName + '|' + escapedOldName + ')(?=\\s|,|$)',
+        'm'
+      )
+      result = result.replace(assemblyLineRe, '$1窗口程序集_' + newName)
+    }
     // 事件引用：_旧名_ → _新名_
     result = result.split('_' + oldName + '_').join('_' + newName + '_')
     // 跨窗口引用：旧名.控件名.属性 或 旧名._事件
     result = result.split(oldName + '.').join(newName + '.')
     return result
   }
+
+  // 类名重命名：按标识符边界替换项目源码中的类名引用
+  const applyClassRenameToContent = useCallback((content: string, oldName: string, newName: string): string => {
+    if (!content.includes(oldName)) return content
+    const escaped = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const regex = new RegExp(
+      '(?<=[^\\u4e00-\\u9fa5A-Za-z0-9_.]|^)' + escaped + '(?=[^\\u4e00-\\u9fa5A-Za-z0-9_.]|$)',
+      'g'
+    )
+    return content.replace(regex, newName)
+  }, [])
+
+  // 类模块名重命名：同步更新标签、文件名、项目引用
+  const handleClassModuleNameRename = useCallback((oldName: string, newName: string) => {
+    setTabs(prev => {
+      if (!projectDir) return prev
+      const current = prev.find(t => t.id === activeTabId)
+      if (!current || !current.filePath || !current.label.toLowerCase().endsWith('.ecc')) return prev
+      const oldFilePath = current.filePath
+      const oldFileName = oldFilePath.split(/[\\/]/).pop() || ''
+      const expectedOldFileName = oldName + '.ecc'
+      if (oldFileName.toLowerCase() !== expectedOldFileName.toLowerCase()) return prev
+      const newFileName = newName + '.ecc'
+      if (!newName || newFileName.toLowerCase() === oldFileName.toLowerCase()) return prev
+      const dir = oldFilePath.replace(/[\\/][^\\/]+$/, '')
+      const newFilePath = (dir ? dir + '\\' : '') + newFileName
+
+      const sourceLangSet = new Set(['eyc', 'egv', 'ecs', 'edt', 'ell'])
+      const openSourcePaths: string[] = []
+
+      const updatedTabs = prev.map(t => {
+        let next = t
+        const isSource = sourceLangSet.has(t.language)
+        if (isSource && t.filePath) openSourcePaths.push(t.filePath)
+        if (isSource && t.value.includes(oldName)) {
+          const replaced = applyClassRenameToContent(t.value, oldName, newName)
+          if (replaced !== t.value) next = { ...next, value: replaced }
+        }
+        if (t.filePath && t.filePath.toLowerCase() === oldFilePath.toLowerCase()) {
+          next = { ...next, id: newFilePath, label: newFileName, filePath: newFilePath }
+        }
+        return next
+      })
+
+      setTimeout(() => {
+        setActiveTabId(newFilePath)
+        onOpenTabsChange?.(updatedTabs)
+      }, 0)
+
+      const prevTabs = prev
+      const openPathsForIpc = openSourcePaths.map(p => p.toLowerCase() === oldFilePath.toLowerCase() ? newFilePath : p)
+      ;(async () => {
+        try {
+          const result = await window.api?.project?.renameClassModule(projectDir, oldFileName, newFileName, oldName, newName, openPathsForIpc)
+          if (!result || !result.success) {
+            setTabs(prevTabs)
+            setActiveTabId(oldFilePath)
+            onOpenTabsChange?.(prevTabs)
+            if (result?.reason === 'exists') {
+              window.alert('类模块重命名失败：目标文件“' + newFileName + '”已存在，请使用其他类名。')
+            } else {
+              const msg = result && 'message' in result ? result.message : '未知错误'
+              window.alert('类模块重命名失败，已回滚：' + msg)
+            }
+            return
+          }
+          onProjectTreeRefresh?.()
+        } catch (error) {
+          setTabs(prevTabs)
+          setActiveTabId(oldFilePath)
+          onOpenTabsChange?.(prevTabs)
+          const msg = error instanceof Error ? error.message : String(error)
+          window.alert('类模块重命名失败，已回滚：' + msg)
+        }
+      })()
+
+      return updatedTabs
+    })
+  }, [activeTabId, applyClassRenameToContent, onOpenTabsChange, onProjectTreeRefresh, projectDir])
 
   // 属性面板修改属性值 → 更新 formData 和 selection
   const updateFormProperty = useCallback((targetKind: 'form' | 'control', controlId: string | null, propName: string, value: string | number | boolean) => {
@@ -418,16 +533,17 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
             if (t.language === 'eyc') {
               if (t.filePath) openEycPaths.push(t.filePath)
               if (t.value.includes(oldName)) {
-                let newValue = applyWindowRenameToContent(t.value, oldName, newName)
+                let newValue = applyWindowRenameToContent(t.value, oldName, newName, !!oldEycPath && !!t.filePath && t.filePath === oldEycPath)
                 // 若是当前窗口关联的 .eyc 标签页，同时更新路径
                 if (oldEycPath && t.filePath === oldEycPath && newEycPath) {
                   return { ...t, id: newEycPath, label: newName + '.eyc', filePath: newEycPath, value: newValue }
                 }
                 return { ...t, value: newValue }
               }
-              // 即使内容没变，也要更新路径（当前窗口关联的 .eyc）
+              // 即使内容未命中旧名，也要确保当前窗口关联 .eyc 的程序集名规则迁移并更新路径
               if (oldEycPath && t.filePath === oldEycPath && newEycPath) {
-                return { ...t, id: newEycPath, label: newName + '.eyc', filePath: newEycPath }
+                const normalizedValue = applyWindowRenameToContent(t.value, oldName, newName, true)
+                return { ...t, id: newEycPath, label: newName + '.eyc', filePath: newEycPath, value: normalizedValue }
               }
             }
             return t
@@ -589,7 +705,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
     hasModifiedTabs: () => tabs.some(t => isTabModified(t)),
     editorAction: (action: string) => {
       const active = tabs.find(t => t.id === activeTabId)
-      if (active?.language === 'eyc') {
+      if (active?.language === 'eyc' || active?.language === 'egv' || active?.language === 'ecs' || active?.language === 'edt' || active?.language === 'ell') {
         eycEditorRef.current?.editorAction(action)
         return
       }
@@ -613,7 +729,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
         const fileName = t.filePath?.replace(/^.*[\\/]/, '') || t.label
         if (t.language === 'efw' && t.formData) {
           files[fileName] = JSON.stringify(t.formData, null, 2)
-        } else if (t.language === 'eyc' || t.language === 'egv') {
+        } else if (t.language === 'eyc' || t.language === 'egv' || t.language === 'ecs' || t.language === 'edt' || t.language === 'ell') {
           files[fileName] = eycToYiFormat(t.value)
         } else {
           files[fileName] = t.value
@@ -633,7 +749,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
         setActiveTabId(incoming.id)
         return merged
       })
-      if (incoming.language === 'efw') onSidebarTab?.('property')
+      syncSidebarByLanguage(incoming.language)
     },
     upsertFile: (tab: EditorTab) => {
       const incoming = normalizeIncomingTab(tab)
@@ -654,7 +770,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
         setActiveTabId(incoming.id)
         return merged
       })
-      if (incoming.language === 'efw') onSidebarTab?.('property')
+      syncSidebarByLanguage(incoming.language)
     },
     insertDeclaration: () => {
       eycEditorRef.current?.insertSubroutine()
@@ -662,12 +778,15 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
     insertLocalVariable: () => {
       eycEditorRef.current?.insertLocalVariable()
     },
+    insertConstant: () => {
+      eycEditorRef.current?.insertConstant()
+    },
     navigateToLine: (line: number) => {
       eycEditorRef.current?.navigateToLine(line)
     },
     updateFormProperty,
     navigateToEventSub,
-  }), [saveCurrentFile, saveAllFiles, closeActiveFile, clearAllTabs, tabs, activeTabId, onOpenTabsChange, onSidebarTab, updateFormProperty, navigateToEventSub])
+  }), [saveCurrentFile, saveAllFiles, closeActiveFile, clearAllTabs, tabs, activeTabId, onOpenTabsChange, syncSidebarByLanguage, updateFormProperty, navigateToEventSub])
 
   // 接收外部打开的项目文件
   useEffect(() => {
@@ -682,11 +801,9 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
       })
       // 激活第一个新文件
       setActiveTabId(normalizedIncoming[0].id)
-      if (normalizedIncoming[0].language === 'efw') {
-        onSidebarTab?.('property')
-      }
+      syncSidebarByLanguage(normalizedIncoming[0].language)
     }
-  }, [openProjectFiles])
+  }, [openProjectFiles, syncSidebarByLanguage])
 
   // 从支持库加载窗口组件信息，并在支持库加载后刷新
   const loadWindowUnits = useCallback(() => {
@@ -703,7 +820,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
     onActiveTabChange?.(activeTabId)
     const activeTab = tabs.find(t => t.id === activeTabId)
     if (activeTab) {
-      const langMap: Record<string, string> = { eyc: '易语言源码', egv: '全局变量', efw: '窗口设计', typescript: 'TypeScript', javascript: 'JavaScript', html: 'HTML', css: 'CSS', json: 'JSON', python: 'Python', plaintext: '纯文本' }
+      const langMap: Record<string, string> = { eyc: '易语言源码', egv: '全局变量', ecs: '常量表', edt: '自定义数据类型', ell: 'DLL命令', efw: '窗口设计', typescript: 'TypeScript', javascript: 'JavaScript', html: 'HTML', css: 'CSS', json: 'JSON', python: 'Python', plaintext: '纯文本' }
       onDocTypeChange?.(langMap[activeTab.language] || activeTab.language)
     } else {
       onDocTypeChange?.('')
@@ -734,7 +851,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
 
       // 优先使用已打开标签页中的最新内容（含未保存修改）
       for (const t of tabs) {
-        if ((t.language === 'egv' || t.language === 'eyc') && t.value) {
+        if ((t.language === 'egv' || t.language === 'eyc' || t.language === 'ecs' || t.language === 'edt' || t.language === 'ell') && t.value) {
           parseGlobalVars(eycToYiFormat(t.value), vars)
         }
       }
@@ -754,6 +871,269 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
 
       if (!cancelled) {
         setProjectGlobalVars([...vars.entries()].map(([name, type]) => ({ name, type })))
+      }
+    })()
+
+    return () => { cancelled = true }
+  }, [projectDir, tabs])
+
+  // 收集项目内 DLL 命令（.ell + 已打开标签页），用于 .eyc 代码补全
+  useEffect(() => {
+    let cancelled = false
+
+    const splitCSV = (text: string): string[] => {
+      const result: string[] = []
+      let cur = ''
+      let inQ = false
+      for (let i = 0; i < text.length; i++) {
+        const ch = text[i]
+        if (inQ) { cur += ch; if (ch === '"' || ch === '\u201d') inQ = false; continue }
+        if (ch === '"' || ch === '\u201c') { inQ = true; cur += ch; continue }
+        if (ch === ',' && i + 1 < text.length && text[i + 1] === ' ') {
+          result.push(cur)
+          cur = ''
+          i++
+          continue
+        }
+        cur += ch
+      }
+      result.push(cur)
+      return result
+    }
+
+    const unquote = (s: string): string => {
+      if (!s) return ''
+      if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith('\u201c') && s.endsWith('\u201d'))) return s.slice(1, -1)
+      return s
+    }
+
+    const parseDllCommands = (content: string, out: Map<string, ProjectDllCommand>) => {
+      const lines = content.split('\n')
+      let current: ProjectDllCommand | null = null
+
+      for (const raw of lines) {
+        const t = raw.replace(/[\r\t]/g, '').trim()
+        if (!t || t.startsWith("'")) continue
+
+        if (t.startsWith('.DLL命令 ')) {
+          const fields = splitCSV(t.slice('.DLL命令 '.length))
+          const name = (fields[0] || '').trim()
+          if (!name) {
+            current = null
+            continue
+          }
+          if (!out.has(name)) {
+            out.set(name, {
+              name,
+              returnType: (fields[1] || '').trim(),
+              description: fields.length > 5 ? fields.slice(5).join(', ').trim() : '',
+              params: [],
+            })
+          }
+          current = out.get(name) || null
+          continue
+        }
+
+        if (t.startsWith('.参数 ') || t.startsWith('    .参数 ')) {
+          if (!current) continue
+          const fields = splitCSV(t.replace(/^\s*\.参数\s+/, ''))
+          const paramName = (fields[0] || '').trim()
+          if (!paramName) continue
+          const flags = (fields[2] || '').trim()
+          current.params.push({
+            name: paramName,
+            type: (fields[1] || '').trim(),
+            description: fields.length > 3 ? fields.slice(3).join(', ').trim() : '',
+            optional: flags.includes('可空'),
+            isVariable: flags.includes('传址'),
+            isArray: flags.includes('数组'),
+          })
+          continue
+        }
+
+        // 命令参数区结束
+        if (t.startsWith('.')) current = null
+      }
+    }
+
+    ;(async () => {
+      if (!projectDir) {
+        if (!cancelled) setProjectDllCommands([])
+        return
+      }
+
+      const commands = new Map<string, ProjectDllCommand>()
+
+      // 优先使用已打开标签页中的最新内容（含未保存修改）
+      for (const t of tabs) {
+        if ((t.language === 'ell' || t.language === 'eyc' || t.language === 'egv' || t.language === 'ecs' || t.language === 'edt') && t.value) {
+          parseDllCommands(eycToYiFormat(t.value), commands)
+        }
+      }
+
+      // 读取磁盘上的 .ell 文件，补齐未打开文件中的 DLL 命令
+      const openedPaths = new Set(tabs.filter(t => t.filePath).map(t => t.filePath!))
+      const files = await window.api?.file?.readDir(projectDir)
+      if (files) {
+        for (const f of files as string[]) {
+          if (!f.toLowerCase().endsWith('.ell')) continue
+          const fp = projectDir + '\\' + f
+          if (openedPaths.has(fp)) continue
+          const content = await window.api?.project?.readFile(fp)
+          if (content) parseDllCommands(content, commands)
+        }
+      }
+
+      if (!cancelled) {
+        setProjectDllCommands([...commands.values()])
+      }
+    })()
+
+    return () => { cancelled = true }
+  }, [projectDir, tabs])
+
+  // 收集项目内常量（.ecs + 已打开标签页），用于 #常量 补全
+  useEffect(() => {
+    let cancelled = false
+
+    const parseConstants = (content: string, out: Map<string, string>) => {
+      const re = /^\s*\.常量\s+([^,\s]+)(?:\s*,\s*([^,\s]+))?/gm
+      let m: RegExpExecArray | null
+      while ((m = re.exec(content)) !== null) {
+        const name = (m[1] || '').trim()
+        const value = (m[2] || '').trim()
+        if (name && !out.has(name)) out.set(name, value)
+      }
+    }
+
+    ;(async () => {
+      if (!projectDir) {
+        if (!cancelled) setProjectConstants([])
+        return
+      }
+
+      const constants = new Map<string, string>()
+
+      // 优先使用已打开标签页中的最新内容（含未保存修改）
+      for (const t of tabs) {
+        if ((t.language === 'ecs' || t.language === 'eyc' || t.language === 'egv') && t.value) {
+          parseConstants(eycToYiFormat(t.value), constants)
+        }
+      }
+
+      // 读取磁盘上的 .ecs 文件，补齐未打开文件中的常量
+      const openedPaths = new Set(tabs.filter(t => t.filePath).map(t => t.filePath!))
+      const files = await window.api?.file?.readDir(projectDir)
+      if (files) {
+        for (const f of files as string[]) {
+          if (!f.toLowerCase().endsWith('.ecs')) continue
+          const fp = projectDir + '\\' + f
+          if (openedPaths.has(fp)) continue
+          const content = await window.api?.project?.readFile(fp)
+          if (content) parseConstants(content, constants)
+        }
+      }
+
+      if (!cancelled) {
+        setProjectConstants([...constants.entries()].map(([name, value]) => ({ name, value })))
+      }
+    })()
+
+    return () => { cancelled = true }
+  }, [projectDir, tabs])
+
+  // 收集项目内自定义数据类型（.edt + 已打开标签页），用于类型补全
+  useEffect(() => {
+    let cancelled = false
+
+    const parseDataTypes = (content: string, out: Set<string>) => {
+      const re = /^\s*\.数据类型\s+([^,\s]+)/gm
+      let m: RegExpExecArray | null
+      while ((m = re.exec(content)) !== null) {
+        const name = (m[1] || '').trim()
+        if (name) out.add(name)
+      }
+    }
+
+    ;(async () => {
+      if (!projectDir) {
+        if (!cancelled) setProjectDataTypes([])
+        return
+      }
+
+      const names = new Set<string>()
+
+      // 优先使用已打开标签页中的最新内容（含未保存修改）
+      for (const t of tabs) {
+        if ((t.language === 'edt' || t.language === 'eyc') && t.value) {
+          parseDataTypes(eycToYiFormat(t.value), names)
+        }
+      }
+
+      // 读取磁盘上的 .edt 文件，补齐未打开文件中的数据类型
+      const openedPaths = new Set(tabs.filter(t => t.filePath).map(t => t.filePath!))
+      const files = await window.api?.file?.readDir(projectDir)
+      if (files) {
+        for (const f of files as string[]) {
+          if (!f.toLowerCase().endsWith('.edt')) continue
+          const fp = projectDir + '\\' + f
+          if (openedPaths.has(fp)) continue
+          const content = await window.api?.project?.readFile(fp)
+          if (content) parseDataTypes(content, names)
+        }
+      }
+
+      if (!cancelled) {
+        setProjectDataTypes([...names].map(name => ({ name })))
+      }
+    })()
+
+    return () => { cancelled = true }
+  }, [projectDir, tabs])
+
+  // 收集项目内类名（.ecc + 已打开标签页），用于类模块继承补全
+  useEffect(() => {
+    let cancelled = false
+
+    const parseClassNames = (content: string, out: Set<string>) => {
+      const re = /^\s*\.程序集\s+([^,\s]+)/gm
+      let m: RegExpExecArray | null
+      while ((m = re.exec(content)) !== null) {
+        const name = (m[1] || '').trim()
+        if (name) out.add(name)
+      }
+    }
+
+    ;(async () => {
+      if (!projectDir) {
+        if (!cancelled) setProjectClassNames([])
+        return
+      }
+
+      const names = new Set<string>()
+
+      // 优先使用已打开标签页中的最新内容（含未保存修改）
+      for (const t of tabs) {
+        if (t.label.toLowerCase().endsWith('.ecc') && t.value) {
+          parseClassNames(eycToYiFormat(t.value), names)
+        }
+      }
+
+      // 读取磁盘上的 .ecc 文件，补齐未打开文件中的类名
+      const openedPaths = new Set(tabs.filter(t => t.filePath).map(t => t.filePath!))
+      const files = await window.api?.file?.readDir(projectDir)
+      if (files) {
+        for (const f of files as string[]) {
+          if (!f.toLowerCase().endsWith('.ecc')) continue
+          const fp = projectDir + '\\' + f
+          if (openedPaths.has(fp)) continue
+          const content = await window.api?.project?.readFile(fp)
+          if (content) parseClassNames(content, names)
+        }
+      }
+
+      if (!cancelled) {
+        setProjectClassNames([...names].map(name => ({ name })))
       }
     })()
 
@@ -929,12 +1309,10 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
   const switchTab = useCallback((tabId: string) => {
     setActiveTabId(tabId)
     const tab = tabs.find(t => t.id === tabId)
-    if (tab?.language === 'efw') {
-      onSidebarTab?.('property')
-    }
+    syncSidebarByLanguage(tab?.language)
     // 切换后聚焦编辑器
     setTimeout(() => editorRef.current?.focus(), 0)
-  }, [tabs, onSidebarTab])
+  }, [tabs, syncSidebarByLanguage])
 
   const isModified = (tab: EditorTab) => isTabModified(tab)
 
@@ -960,7 +1338,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
             onControlDoubleClick={handleControlDblClick}
             onFormDoubleClick={handleFormDblClick}
           />
-        ) : (activeTab.language === 'eyc' || activeTab.language === 'egv') ? (
+        ) : (activeTab.language === 'eyc' || activeTab.language === 'egv' || activeTab.language === 'ecs' || activeTab.language === 'edt' || activeTab.language === 'ell') ? (
           eycFallbackTabs[activeTab.id] ? (
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#2d2d2d', borderBottom: '1px solid #3a3a3a' }}>
@@ -1088,7 +1466,13 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
               <EycTableEditor
                 ref={eycEditorRef}
                 value={activeTab.value}
+                isClassModule={activeTab.label.toLowerCase().endsWith('.ecc')}
                 projectGlobalVars={projectGlobalVars}
+                projectConstants={projectConstants}
+                projectDllCommands={projectDllCommands}
+                projectDataTypes={projectDataTypes}
+                projectClassNames={projectClassNames}
+                onClassNameRename={handleClassModuleNameRename}
                 onChange={handleEycChange}
                 onCommandClick={onCommandClick}
                 onCommandClear={onCommandClear}
@@ -1196,7 +1580,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
             <span className="editor-tab-icon">
               {getFileIcon(tab.language)}
             </span>
-            <span className="editor-tab-label">{tab.label}</span>
+            <span className={`editor-tab-label ${getTabLabelClass(tab.language)}`}>{tab.label}</span>
             {isModified(tab) && (
               <span className="editor-tab-modified" title="未保存更改">●</span>
             )}
@@ -1230,6 +1614,24 @@ function getFileIcon(language: string): ReactNode {
     plaintext: '📄',
   }
   return textIcons[language] || '📄'
+}
+
+function getTabLabelClass(language: string): string {
+  const classMap: Record<string, string> = {
+    eyc: 'tab-label-eyc',
+    egv: 'tab-label-egv',
+    ecs: 'tab-label-ecs',
+    edt: 'tab-label-edt',
+    ell: 'tab-label-ell',
+    efw: 'tab-label-efw',
+    typescript: 'tab-label-ts',
+    javascript: 'tab-label-js',
+    html: 'tab-label-html',
+    css: 'tab-label-css',
+    json: 'tab-label-json',
+    python: 'tab-label-python',
+  }
+  return classMap[language] || 'tab-label-default'
 }
 
 export default Editor

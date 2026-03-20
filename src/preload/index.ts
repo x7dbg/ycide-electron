@@ -27,13 +27,19 @@ const api = {
       projectDir: string;
     } | null>,
     updatePlatform: (projectDir: string, platform: string) => ipcRenderer.invoke('project:updatePlatform', projectDir, platform),
-    saveOpenTabs: (projectDir: string, tabPaths: string[]) => ipcRenderer.invoke('project:saveOpenTabs', projectDir, tabPaths),
-    loadOpenTabs: (projectDir: string) => ipcRenderer.invoke('project:loadOpenTabs', projectDir) as Promise<string[]>,
+    saveOpenTabs: (projectDir: string, session: { openTabs: string[]; activeTabPath?: string }) => ipcRenderer.invoke('project:saveOpenTabs', projectDir, session),
+    loadOpenTabs: (projectDir: string) => ipcRenderer.invoke('project:loadOpenTabs', projectDir) as Promise<{ openTabs: string[]; activeTabPath?: string }>,
     openEpp: () => ipcRenderer.invoke('project:openEpp') as Promise<string | null>,
     addFile: (projectDir: string, fileName: string, fileType: string, content: string) =>
       ipcRenderer.invoke('project:addFile', projectDir, fileName, fileType, content) as Promise<string>,
     renameWindow: (projectDir: string, oldName: string, newName: string, openEycPaths: string[]) =>
       ipcRenderer.invoke('project:renameWindow', projectDir, oldName, newName, openEycPaths) as Promise<{ newEfwPath: string; newEycPath: string }>,
+    renameClassModule: (projectDir: string, oldFileName: string, newFileName: string, oldClassName: string, newClassName: string, openSourcePaths: string[]) =>
+      ipcRenderer.invoke('project:renameClassModule', projectDir, oldFileName, newFileName, oldClassName, newClassName, openSourcePaths) as Promise<
+        | { success: true; newClassPath: string }
+        | { success: false; reason: 'exists'; newClassPath: string }
+        | { success: false; reason: 'error'; message: string; newClassPath: string }
+      >,
   },
   // 编译
   compiler: {

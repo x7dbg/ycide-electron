@@ -32,6 +32,9 @@
 .eyc-line-selected .eyc-gutter-linenum {
   color: #e0e0e0;
 }
+.eyc-gutter-cell.eyc-line-selected {
+  background-color: rgba(51, 153, 255, 0.2);
+}
 
 .eyc-line-gutter {
   width: 80px;
@@ -640,6 +643,26 @@
 .eyc-data-row:hover {
   background: rgba(255, 255, 255, 0.04);
 }
+.eyc-data-row.eyc-line-selected {
+  background: rgba(51, 153, 255, 0.2);
+}
+.eyc-data-row.eyc-line-selected:hover {
+  background: rgba(51, 153, 255, 0.2);
+}
+/* 保持表格本身不拉伸，只给选中行右侧空白区域补背景 */
+.eyc-data-row.eyc-line-selected > td:last-child {
+  position: relative;
+}
+.eyc-data-row.eyc-line-selected > td:last-child::after {
+  content: '';
+  position: absolute;
+  left: 100%;
+  top: -1px;
+  bottom: -1px;
+  width: 100vw;
+  background: rgba(51, 153, 255, 0.2);
+  pointer-events: none;
+}
 
 /* ===== 表头背景色 ===== */
 /* 默认表头（子程序、常量、DLL等）— 灰绿色 */
@@ -755,6 +778,12 @@
   text-underline-offset: 2px;
 }
 
+.eyc-cell-invalid {
+  text-decoration: wavy underline #f44747;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 2px;
+}
+
 /* 对象.方法 调用 — 对象颜色 */
 .cometwolr {
   color: #ce9178;
@@ -830,6 +859,11 @@
   outline: none;
   box-shadow: none;
 }
+.eyc-cell-input.eyc-input-invalid {
+  text-decoration: wavy underline #f44747;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 2px;
+}
 
 /* ===== 自动补全弹窗 ===== */
 .eyc-ac-container {
@@ -894,6 +928,15 @@
   background: #04395e;
 }
 
+.eyc-ac-item-more {
+  border-top: 1px dashed #3c3c3c;
+}
+
+.eyc-ac-item-more .eyc-ac-name {
+  color: #9cdcfe;
+  font-style: italic;
+}
+
 .eyc-ac-name {
   color: #dcdcaa;
   font-weight: bold;
@@ -903,6 +946,19 @@
 .eyc-ac-return {
   color: #4ec9b0;
   font-size: 11px;
+  flex-shrink: 0;
+}
+
+.eyc-ac-source {
+  margin-left: auto;
+  padding: 0 6px;
+  height: 16px;
+  line-height: 16px;
+  border-radius: 8px;
+  font-size: 10px;
+  color: #9cdcfe;
+  background: rgba(86, 156, 214, 0.18);
+  border: 1px solid rgba(86, 156, 214, 0.35);
   flex-shrink: 0;
 }
 

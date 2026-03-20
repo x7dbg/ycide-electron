@@ -195,7 +195,7 @@ function OutputPanel({ height, onResize, onClose, messages = [], commandDetail, 
                   </div>
                 )}
                 {cd.description && (
-                  <div className="cmd-detail-desc">{cd.description}</div>
+                  <div className={`cmd-detail-desc${cd.description.includes('未在已加载的支持库中找到此命令') ? ' cmd-detail-desc-error' : ''}`}>{cd.description}</div>
                 )}
                 {cd.params.length > 0 && (
                   <div className="cmd-detail-params">

@@ -61,6 +61,24 @@
   text-overflow: ellipsis;
 }
 
+.editor-tab-label.tab-label-eyc { color: #8fd3ff; }
+.editor-tab-label.tab-label-egv { color: #79e0b6; }
+.editor-tab-label.tab-label-ecs { color: #f2c86a; }
+.editor-tab-label.tab-label-edt { color: #f39ac7; }
+.editor-tab-label.tab-label-ell { color: #ffb07a; }
+.editor-tab-label.tab-label-efw { color: #86b6ff; }
+.editor-tab-label.tab-label-ts { color: #86b6ff; }
+.editor-tab-label.tab-label-js { color: #f2d16b; }
+.editor-tab-label.tab-label-html { color: #ff9f74; }
+.editor-tab-label.tab-label-css { color: #83c9ff; }
+.editor-tab-label.tab-label-json { color: #b6d48b; }
+.editor-tab-label.tab-label-python { color: #9fd487; }
+.editor-tab-label.tab-label-default { color: var(--text-secondary); }
+
+.editor-tab.active .editor-tab-label {
+  filter: saturate(1.1) brightness(1.08);
+}
+
 .editor-tab-modified {
   color: var(--text-primary);
   font-size: 10px;

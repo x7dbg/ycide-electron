@@ -26,7 +26,7 @@ interface SidebarProps {
   onSelectControl?: (target: SelectionTarget) => void
   onPropertyChange?: (targetKind: 'form' | 'control', controlId: string | null, propName: string, value: string | number | boolean) => void
   projectTree?: TreeNode[]
-  onOpenFile?: (fileId: string, fileName: string) => void
+  onOpenFile?: (fileId: string, fileName: string, targetLine?: number) => void
   activeFileId?: string | null
   projectDir?: string
   onEventNavigate?: (selection: SelectionTarget, eventName: string, eventArgs: Array<{ name: string; description: string; dataType: string; isByRef: boolean }>) => void
@@ -49,21 +49,30 @@ export interface TreeNode {
   type: 'folder' | 'module' | 'class' | 'sub' | 'func' | 'window' | 'resource'
   children?: TreeNode[]
   expanded?: boolean
+  // 子节点（如子程序）可指向其所属源码文件
+  fileId?: string
+  fileName?: string
 }
 
-function TreeItem({ node, depth = 0, onOpenFile, activeFileId }: { node: TreeNode; depth?: number; onOpenFile?: (fileId: string, fileName: string) => void; activeFileId?: string | null }): React.JSX.Element {
+function TreeItem({ node, depth = 0, onOpenFile, activeFileId }: { node: TreeNode; depth?: number; onOpenFile?: (fileId: string, fileName: string, targetLine?: number) => void; activeFileId?: string | null }): React.JSX.Element {
   const [expanded, setExpanded] = useState(node.expanded ?? false)
   const hasChildren = node.children && node.children.length > 0
+  const declMatch = /^(.+)::(sub|global|const|dtype|dll)::(\d+)$/.exec(node.id)
+  const ownerFile = declMatch?.[1]
+  const lineIndex = declMatch ? Number.parseInt(declMatch[3], 10) : NaN
+  const targetLine = Number.isFinite(lineIndex) ? lineIndex + 1 : undefined
+  const openFileId = node.fileId || ownerFile || node.id
+  const openFileName = node.fileName || ownerFile || node.label
 
   return (
     <li role="treeitem" aria-expanded={hasChildren ? expanded : undefined}>
       <div
-        className={`tree-item ${hasChildren ? 'tree-branch' : 'tree-leaf'}${!hasChildren && activeFileId && activeFileId === node.id ? ' tree-item-active' : ''}`}
+        className={`tree-item ${hasChildren ? 'tree-branch' : 'tree-leaf'}${!hasChildren && activeFileId && activeFileId === openFileId ? ' tree-item-active' : ''}`}
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
         onClick={() => hasChildren && setExpanded(!expanded)}
         onDoubleClick={() => {
           if (!hasChildren && onOpenFile) {
-            onOpenFile(node.id, node.label)
+            onOpenFile(openFileId, openFileName, targetLine)
           }
         }}
         tabIndex={0}
@@ -71,7 +80,7 @@ function TreeItem({ node, depth = 0, onOpenFile, activeFileId }: { node: TreeNod
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
             if (hasChildren) setExpanded(!expanded)
-            else if (onOpenFile) onOpenFile(node.id, node.label)
+            else if (onOpenFile) onOpenFile(openFileId, openFileName, targetLine)
           }
         }}
       >

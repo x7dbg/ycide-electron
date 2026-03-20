@@ -116,6 +116,16 @@ const EVENT_INFO2_RAW = koffi.struct('EVENT_INFO2_RAW', {
   m_dtRetDataType:   'uint32',
 })
 
+const LIB_CONST_INFO = koffi.struct('LIB_CONST_INFO', {
+  m_szName:    'const char *',
+  m_szEgName:  'const char *',
+  m_szExplain: 'const char *',
+  m_shtLayout: 'int16',
+  m_shtType:   'int16',
+  m_szText:    'const char *',
+  m_dbValue:   'double',
+})
+
 const LIB_INFO = koffi.struct('LIB_INFO', {
   m_dwLibFormatVer:            'uint32',
   m_szGuid:                    'const char *',
@@ -184,6 +194,14 @@ export interface LibDataType {
   englishName: string
   description: string
   isWindowUnit: boolean
+}
+
+export interface LibConstant {
+  name: string
+  englishName: string
+  description: string
+  type: 'null' | 'number' | 'bool' | 'text'
+  value: string
 }
 
 /** 属性类型常量 */
@@ -281,6 +299,7 @@ export interface LibInfo {
   fileName: string
   commands: LibCommand[]
   dataTypes: LibDataType[]
+  constants: LibConstant[]
   windowUnits: LibWindowUnit[]
 }
 
@@ -301,6 +320,16 @@ function dataTypeToString(dt: number): string {
   if (dt === SDT_SUB_PTR)   return '子程序指针'
   if ((dt & 0x80000000) === 0 && dt !== 0) return '自定义类型'
   return '通用型'
+}
+
+function formatLibConstValue(type: number, textValue: string, numValue: number): { type: 'null' | 'number' | 'bool' | 'text'; value: string } {
+  if (type === 3) return { type: 'text', value: textValue || '' }
+  if (type === 2) return { type: 'bool', value: numValue !== 0 ? '真' : '假' }
+  if (type === 1) {
+    const isIntLike = Number.isFinite(numValue) && Math.abs(numValue - Math.round(numValue)) < 1e-10
+    return { type: 'number', value: isIntLike ? String(Math.round(numValue)) : String(numValue) }
+  }
+  return { type: 'null', value: '' }
 }
 
 function readCStr(ptr: unknown): string {
@@ -401,7 +430,36 @@ export function parseFneFile(fnePath: string): LibInfo | null {
     fileName,
     commands: [],
     dataTypes: [],
+    constants: [],
     windowUnits: [],
+  }
+
+  // 解析支持库常量
+  const libConstCount = pLibInfo.m_nLibConstCount as number
+  const pLibConstArr = pLibInfo.m_pLibConst
+  if (pLibConstArr && libConstCount > 0) {
+    let constArray: Array<Record<string, unknown>>
+    try {
+      constArray = koffi.decode(pLibConstArr as never, koffi.array(LIB_CONST_INFO, libConstCount)) as Array<Record<string, unknown>>
+    } catch {
+      constArray = []
+    }
+    for (let i = 0; i < constArray.length; i++) {
+      const c = constArray[i]
+      const name = (c.m_szName as string) || ''
+      if (!name) continue
+      const typeNum = c.m_shtType as number
+      const textValue = (c.m_szText as string) || ''
+      const numValue = Number(c.m_dbValue as number)
+      const formatted = formatLibConstValue(typeNum, textValue, numValue)
+      info.constants.push({
+        name,
+        englishName: (c.m_szEgName as string) || '',
+        description: (c.m_szExplain as string) || '',
+        type: formatted.type,
+        value: formatted.value,
+      })
+    }
   }
 
   // 解析命令类别

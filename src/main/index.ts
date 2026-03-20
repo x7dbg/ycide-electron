@@ -217,20 +217,31 @@ app.whenReady().then(() => {
     writeFileSync(eppPath, content, 'utf-8')
   })
 
-  // 保存打开的标签页列表到项目目录
-  ipcMain.handle('project:saveOpenTabs', (_event, projectDir: string, tabPaths: string[]) => {
+  // 保存打开的标签页会话到项目目录
+  ipcMain.handle('project:saveOpenTabs', (_event, projectDir: string, session: { openTabs: string[]; activeTabPath?: string }) => {
     const sessionPath = join(projectDir, '.ycide-session.json')
-    writeFileSync(sessionPath, JSON.stringify({ openTabs: tabPaths }, null, 2), 'utf-8')
+    writeFileSync(sessionPath, JSON.stringify({ openTabs: session.openTabs || [], activeTabPath: session.activeTabPath || undefined }, null, 2), 'utf-8')
   })
 
-  // 读取保存的标签页列表
+  // 读取保存的标签页会话（兼容旧格式：string[]）
   ipcMain.handle('project:loadOpenTabs', (_event, projectDir: string) => {
     const sessionPath = join(projectDir, '.ycide-session.json')
-    if (!existsSync(sessionPath)) return []
+    if (!existsSync(sessionPath)) return { openTabs: [] }
     try {
       const data = JSON.parse(readFileSync(sessionPath, 'utf-8'))
-      return data.openTabs || []
-    } catch { return [] }
+      if (Array.isArray(data)) {
+        return { openTabs: data }
+      }
+      if (data && Array.isArray(data.openTabs)) {
+        return {
+          openTabs: data.openTabs,
+          activeTabPath: typeof data.activeTabPath === 'string' ? data.activeTabPath : undefined,
+        }
+      }
+      return { openTabs: [] }
+    } catch {
+      return { openTabs: [] }
+    }
   })
 
   // 打开项目文件对话框（选择 .epp 文件）
@@ -295,13 +306,22 @@ app.whenReady().then(() => {
 
     // 5. 更新磁盘上所有 .eyc 文件的内容引用（跳过已在编辑器中打开的）
     const eycFiles = readdirSync(projectDir).filter(f => f.toLowerCase().endsWith('.eyc'))
+    const escapedOldName = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const ownAssemblyLineRe = new RegExp(
+      '^(\\s*\\.程序集\\s+)(窗口程序集_' + escapedOldName + '|' + escapedOldName + ')(?=\\s|,|$)',
+      'm'
+    )
     for (const fileName of eycFiles) {
       const filePath = join(projectDir, fileName)
       if (openSet.has(filePath)) continue
       let content = readFileSync(filePath, 'utf-8')
-      if (!content.includes(oldName)) continue
+      const isOwnRenamedSource = filePath.toLowerCase() === newEyc.toLowerCase()
+      if (!content.includes(oldName) && !isOwnRenamedSource) continue
       // 更新程序集名：窗口程序集_旧名 → 窗口程序集_新名
       content = content.split('窗口程序集_' + oldName).join('窗口程序集_' + newName)
+      if (isOwnRenamedSource) {
+        content = content.replace(ownAssemblyLineRe, '$1窗口程序集_' + newName)
+      }
       // 更新事件引用：_旧名_ → _新名_
       content = content.split('_' + oldName + '_').join('_' + newName + '_')
       // 更新跨窗口引用：旧名. → 新名.  (如 窗口1.按钮1.禁止)
@@ -310,6 +330,54 @@ app.whenReady().then(() => {
     }
 
     return { newEfwPath: newEfw, newEycPath: newEyc }
+  })
+
+  // 类模块重命名：重命名 .ecc、更新 .epp、更新项目源码中的类名引用
+  ipcMain.handle('project:renameClassModule', (_event, projectDir: string, oldFileName: string, newFileName: string, oldClassName: string, newClassName: string, openSourcePaths: string[]) => {
+    const oldClassPath = join(projectDir, oldFileName)
+    const newClassPath = join(projectDir, newFileName)
+    const openSet = new Set(openSourcePaths.map(p => p.toLowerCase()))
+
+    if (oldClassPath.toLowerCase() !== newClassPath.toLowerCase() && existsSync(newClassPath)) {
+      return { success: false as const, reason: 'exists' as const, newClassPath }
+    }
+
+    try {
+      // 1. 重命名 .ecc 文件
+      if (existsSync(oldClassPath) && oldClassPath.toLowerCase() !== newClassPath.toLowerCase()) {
+        renameSync(oldClassPath, newClassPath)
+      }
+
+      // 2. 更新 .epp 项目文件中的文件引用
+      const eppFiles = readdirSync(projectDir).filter(f => f.endsWith('.epp'))
+      if (eppFiles.length > 0) {
+        const eppPath = join(projectDir, eppFiles[0])
+        let eppContent = readFileSync(eppPath, 'utf-8')
+        eppContent = eppContent.split(oldFileName).join(newFileName)
+        writeFileSync(eppPath, eppContent, 'utf-8')
+      }
+
+      // 3. 更新磁盘上未打开源码文件中的类名引用
+      const escaped = oldClassName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const classNameRegex = new RegExp(
+        '(?<=[^\\u4e00-\\u9fa5A-Za-z0-9_.]|^)' + escaped + '(?=[^\\u4e00-\\u9fa5A-Za-z0-9_.]|$)',
+        'g'
+      )
+      const sourceFiles = readdirSync(projectDir).filter(f => /\.(eyc|ecc|egv|ecs|edt|ell)$/i.test(f))
+      for (const fileName of sourceFiles) {
+        const filePath = join(projectDir, fileName)
+        if (openSet.has(filePath.toLowerCase())) continue
+        const content = readFileSync(filePath, 'utf-8')
+        if (!content.includes(oldClassName)) continue
+        const next = content.replace(classNameRegex, newClassName)
+        if (next !== content) writeFileSync(filePath, next, 'utf-8')
+      }
+
+      return { success: true as const, newClassPath }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return { success: false as const, reason: 'error' as const, message, newClassPath }
+    }
   })
 
   // 向项目添加文件（创建文件 + 更新 .epp）

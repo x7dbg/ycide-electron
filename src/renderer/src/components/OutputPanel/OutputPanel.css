@@ -142,6 +142,10 @@
   line-height: 1.6;
 }
 
+.cmd-detail-desc.cmd-detail-desc-error {
+  color: var(--error);
+}
+
 .cmd-detail-params {
   border-top: 1px solid var(--border-color);
   padding-top: 6px;

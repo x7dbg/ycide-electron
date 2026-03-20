@@ -55,6 +55,9 @@ export function matchCommand(
   // 2. 英文名前缀匹配
   if (cmdEnglishName && cmdEnglishName.toLowerCase().startsWith(lower)) return true
 
+  // 3. 中文+拼音混合顺序匹配
+  if (mixedMatchCoverage(lower, cmdName) > 0) return true
+
   // 3-5. 拼音匹配
   return pinyinMatch(lower, cmdName)
 }
@@ -66,6 +69,104 @@ function pinyinMatch(input: string, target: string): boolean {
   if (!/^[a-z]+$/.test(input)) return false
   const chars = [...target]
   return matchFrom(input, 0, chars, 0)
+}
+
+function tokenizeMixedInput(input: string): string[] {
+  const tokens: string[] = []
+  let i = 0
+  while (i < input.length) {
+    const ch = input[i]
+    if (/[a-z]/.test(ch)) {
+      let j = i + 1
+      while (j < input.length && /[a-z]/.test(input[j])) j++
+      tokens.push(input.slice(i, j))
+      i = j
+      continue
+    }
+    tokens.push(ch)
+    i++
+  }
+  return tokens
+}
+
+/**
+ * 返回纯拼音 token 从 chars[cPos] 开始可匹配到的所有结束位置
+ */
+function pinyinTokenMatchEnds(token: string, chars: string[], cPos: number): number[] {
+  const ends = new Set<number>()
+
+  const dfs = (iPos: number, pos: number): void => {
+    if (iPos >= token.length) {
+      ends.add(pos)
+      return
+    }
+    if (pos >= chars.length) return
+
+    const ch = chars[pos]
+    const py = getCharPinyin(ch)
+
+    if (!py) {
+      if (token[iPos] === ch.toLowerCase()) dfs(iPos + 1, pos + 1)
+      return
+    }
+
+    // 首字母匹配
+    if (py[0] === token[iPos]) dfs(iPos + 1, pos + 1)
+
+    // 全拼前缀匹配（允许 1..py.length，支持如 "s" / "sh" / "shu"）
+    for (let len = py.length; len >= 1; len--) {
+      if (iPos + len <= token.length && token.slice(iPos, iPos + len) === py.slice(0, len)) {
+        dfs(iPos + len, pos + 1)
+      }
+    }
+  }
+
+  dfs(0, cPos)
+  return [...ends].sort((a, b) => b - a)
+}
+
+/**
+ * 混合匹配覆盖：支持“中文+拼音”交替输入。
+ * 例如：整s / 整sh / 调s / tiao试 / 调shi / tiao试输
+ */
+function mixedMatchCoverage(input: string, target: string): number {
+  if (!input) return -1
+  const lower = input.toLowerCase()
+  const tokens = tokenizeMixedInput(lower)
+  if (tokens.length === 0) return -1
+
+  const chars = [...target]
+  const memo = new Map<string, number>()
+
+  const dfs = (ti: number, cPos: number): number => {
+    const key = `${ti}:${cPos}`
+    const cached = memo.get(key)
+    if (cached !== undefined) return cached
+
+    if (ti >= tokens.length) return cPos
+    if (cPos >= chars.length) return -1
+
+    const token = tokens[ti]
+    let best = -1
+
+    if (/^[a-z]+$/.test(token)) {
+      const ends = pinyinTokenMatchEnds(token, chars, cPos)
+      for (const endPos of ends) {
+        const r = dfs(ti + 1, endPos)
+        if (r > best) best = r
+      }
+    } else {
+      const ch = chars[cPos]
+      if (token === ch || token === ch.toLowerCase()) {
+        best = dfs(ti + 1, cPos + 1)
+      }
+    }
+
+    memo.set(key, best)
+    return best
+  }
+
+  return dfs(0, 0)
 }
 
 /**
@@ -156,6 +257,14 @@ export function matchScore(input: string, cmdName: string, cmdEnglishName: strin
   const initials = [...cmdName].map(getCharInitial).join('')
   if (initials === lower) return 70
   if (initials.startsWith(lower)) return 65
+
+  const mixedConsumed = mixedMatchCoverage(lower, cmdName)
+  if (mixedConsumed > 0) {
+    const targetLen = [...cmdName].length
+    if (mixedConsumed >= targetLen) return 69
+    if (mixedConsumed / targetLen >= 0.5) return 60
+    return 54
+  }
 
   if (/^[a-z]+$/.test(lower)) {
     const targetLen = [...cmdName].length

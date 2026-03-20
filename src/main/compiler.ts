@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSy
 import { execFile, ChildProcess } from 'child_process'
 import { app, BrowserWindow } from 'electron'
 import { libraryManager } from './library-manager'
-import type { LibCommand } from './fne-parser'
+import type { LibCommand, LibConstant } from './fne-parser'
 
 // 编译消息类型
 export interface CompileMessage {
@@ -77,6 +77,15 @@ interface ProjectInfo {
 interface GlobalVarDef {
   name: string
   type: string
+}
+
+interface ConstantDef {
+  name: string
+  value: string
+}
+
+interface LibraryConstantDef extends ConstantDef {
+  type: 'null' | 'number' | 'bool' | 'text'
 }
 
 // 正在运行的进程
@@ -214,7 +223,13 @@ function getWin32ClassName(ctrlType: string): string {
     'CheckBox': 'BUTTON', '复选框': 'BUTTON', '选择框': 'BUTTON',
     'RadioButton': 'BUTTON', '单选框': 'BUTTON',
     'ListBox': 'LISTBOX', '列表框': 'LISTBOX',
+    'ListView': 'SysListView32', '列表视图': 'SysListView32',
+    'TreeView': 'SysTreeView32', '树形框': 'SysTreeView32',
+    'TabControl': 'SysTabControl32', '标签页': 'SysTabControl32',
     'ComboBox': 'COMBOBOX', '组合框': 'COMBOBOX',
+    'SliderBar': 'msctls_trackbar32', '滑块条': 'msctls_trackbar32',
+    'ScrollBar': 'SCROLLBAR', '滚动条': 'SCROLLBAR',
+    'ProgressBar': 'msctls_progress32', '进度条': 'msctls_progress32',
     'GroupBox': 'BUTTON', '分组框': 'BUTTON',
     '图片框': 'STATIC',
     'ycUI按钮': 'ycButton',
@@ -238,14 +253,123 @@ function getWin32Style(ctrlType: string): string {
     '选择框': 'WS_CHILD | BS_AUTOCHECKBOX',
     'ListBox': 'WS_CHILD | WS_BORDER | WS_VSCROLL | LBS_NOTIFY',
     '列表框': 'WS_CHILD | WS_BORDER | WS_VSCROLL | LBS_NOTIFY',
+    'ListView': 'WS_CHILD | WS_BORDER | LVS_REPORT',
+    '列表视图': 'WS_CHILD | WS_BORDER | LVS_REPORT',
+    'TreeView': 'WS_CHILD | WS_BORDER | TVS_HASLINES | TVS_LINESATROOT | TVS_HASBUTTONS',
+    '树形框': 'WS_CHILD | WS_BORDER | TVS_HASLINES | TVS_LINESATROOT | TVS_HASBUTTONS',
+    'TabControl': 'WS_CHILD | WS_CLIPSIBLINGS',
+    '标签页': 'WS_CHILD | WS_CLIPSIBLINGS',
     'ComboBox': 'WS_CHILD | CBS_DROPDOWNLIST | WS_VSCROLL',
     '组合框': 'WS_CHILD | CBS_DROPDOWNLIST | WS_VSCROLL',
+    'SliderBar': 'WS_CHILD | TBS_AUTOTICKS',
+    '滑块条': 'WS_CHILD | TBS_AUTOTICKS',
+    'ScrollBar': 'WS_CHILD | SBS_HORZ',
+    '滚动条': 'WS_CHILD | SBS_HORZ',
+    'ProgressBar': 'WS_CHILD',
+    '进度条': 'WS_CHILD',
     'GroupBox': 'WS_CHILD | BS_GROUPBOX',
     '分组框': 'WS_CHILD | BS_GROUPBOX',
     '图片框': 'WS_CHILD | SS_LEFT',
     'ycUI按钮': 'WS_CHILD',
   }
   return map[ctrlType] || 'WS_CHILD | SS_LEFT'
+}
+
+function resolveCommandNotifyCode(className: string, eventName: string): string | null {
+  const cls = (className || '').toUpperCase()
+  const ev = (eventName || '').replace(/\s+/g, '')
+
+  const isClick = ev.includes('被单击') || ev === '单击' || ev === '点击'
+  const isDblClick = ev.includes('双击')
+  const isTextChange = ev.includes('内容被改变') || ev.includes('内容改变') || ev.includes('文本被改变') || ev.includes('文本改变')
+  const isSelectChange = ev.includes('选择项被改变') || ev.includes('选择被改变') || ev.includes('选中项被改变') || ev.includes('选中被改变')
+  const isFocus = ev.includes('得到焦点')
+  const isBlur = ev.includes('失去焦点')
+
+  if (isClick) {
+    if (cls === 'BUTTON' || cls === 'YCBUTTON') return 'BN_CLICKED'
+    if (cls === 'STATIC') return 'STN_CLICKED'
+  }
+  if (isDblClick) {
+    if (cls === 'BUTTON' || cls === 'YCBUTTON') return 'BN_DBLCLK'
+    if (cls === 'STATIC') return 'STN_DBLCLK'
+    if (cls === 'LISTBOX') return 'LBN_DBLCLK'
+  }
+  if (isTextChange) {
+    if (cls === 'EDIT') return 'EN_CHANGE'
+    if (cls === 'COMBOBOX') return 'CBN_EDITCHANGE'
+  }
+  if (isSelectChange) {
+    if (cls === 'LISTBOX') return 'LBN_SELCHANGE'
+    if (cls === 'COMBOBOX') return 'CBN_SELCHANGE'
+  }
+  if (isFocus) {
+    if (cls === 'EDIT') return 'EN_SETFOCUS'
+    if (cls === 'LISTBOX') return 'LBN_SETFOCUS'
+    if (cls === 'COMBOBOX') return 'CBN_SETFOCUS'
+    if (cls === 'BUTTON' || cls === 'YCBUTTON') return 'BN_SETFOCUS'
+  }
+  if (isBlur) {
+    if (cls === 'EDIT') return 'EN_KILLFOCUS'
+    if (cls === 'LISTBOX') return 'LBN_KILLFOCUS'
+    if (cls === 'COMBOBOX') return 'CBN_KILLFOCUS'
+    if (cls === 'BUTTON' || cls === 'YCBUTTON') return 'BN_KILLFOCUS'
+  }
+
+  return null
+}
+
+function resolveNotifyCode(className: string, eventName: string): string | null {
+  const cls = (className || '').toUpperCase()
+  const ev = (eventName || '').replace(/\s+/g, '')
+
+  const isClick = ev.includes('被单击') || ev === '单击' || ev === '点击'
+  const isDblClick = ev.includes('双击')
+  const isSelectChange = ev.includes('选择项被改变') || ev.includes('选择被改变') || ev.includes('选中项被改变') || ev.includes('选中被改变')
+  const isItemActivate = ev.includes('项被激活') || ev.includes('激活项')
+  const isLabelBegin = ev.includes('开始标签编辑') || ev.includes('开始编辑标签')
+  const isLabelEnd = ev.includes('结束标签编辑') || ev.includes('标签编辑结束')
+  const isExpandCollapse = ev.includes('展开') || ev.includes('折叠')
+  const isCustomDraw = ev.includes('自定义绘制') || ev.includes('绘制')
+
+  if (cls === 'SYSLISTVIEW32') {
+    if (isClick) return 'NM_CLICK'
+    if (isDblClick) return 'NM_DBLCLK'
+    if (isSelectChange) return 'LVN_ITEMCHANGED'
+    if (isItemActivate) return 'LVN_ITEMACTIVATE'
+    if (isLabelBegin) return 'LVN_BEGINLABELEDIT'
+    if (isLabelEnd) return 'LVN_ENDLABELEDIT'
+    if (isCustomDraw) return 'NM_CUSTOMDRAW'
+  }
+
+  if (cls === 'SYSTREEVIEW32') {
+    if (isClick) return 'NM_CLICK'
+    if (isDblClick) return 'NM_DBLCLK'
+    if (isSelectChange) return 'TVN_SELCHANGED'
+    if (isLabelBegin) return 'TVN_BEGINLABELEDIT'
+    if (isLabelEnd) return 'TVN_ENDLABELEDIT'
+    if (isExpandCollapse) return 'TVN_ITEMEXPANDED'
+    if (isCustomDraw) return 'NM_CUSTOMDRAW'
+  }
+
+  if (cls === 'SYSTABCONTROL32') {
+    if (isSelectChange) return 'TCN_SELCHANGE'
+    if (isClick) return 'NM_CLICK'
+    if (isDblClick) return 'NM_DBLCLK'
+  }
+
+  return null
+}
+
+function resolveScrollMessage(className: string, eventName: string): 'WM_HSCROLL' | 'WM_VSCROLL' | null {
+  const cls = (className || '').toUpperCase()
+  const ev = (eventName || '').replace(/\s+/g, '')
+  const isScrollLike = ev.includes('滚动') || ev.includes('位置') || ev.includes('值被改变') || ev.includes('值改变')
+  if (!isScrollLike) return null
+
+  if (cls === 'MSCTLS_TRACKBAR32') return 'WM_HSCROLL'
+  if (cls === 'SCROLLBAR') return 'WM_HSCROLL'
+  return null
 }
 
 // 解析窗口文件
@@ -316,12 +440,27 @@ function parseGlobalVarDeclarations(content: string): GlobalVarDef[] {
   return vars
 }
 
+function parseConstantDeclarations(content: string): ConstantDef[] {
+  const constants: ConstantDef[] = []
+  const lines = content.split('\n')
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/[\u200B\u200C\u200D\u2060]/g, '').trim()
+    if (!line.startsWith('.常量 ')) continue
+    const parts = splitDeclParts(line.substring(3))
+    const name = parts[0] || ''
+    const value = parts[1] || '0'
+    if (!name) continue
+    constants.push({ name, value })
+  }
+  return constants
+}
+
 function collectProjectGlobalVars(project: ProjectInfo, editorFiles?: Map<string, string>): GlobalVarDef[] {
   const result: GlobalVarDef[] = []
   const seen = new Set<string>()
 
   for (const f of project.files) {
-    if (f.type !== 'EYC' && f.type !== 'EGV') continue
+    if (f.type !== 'EYC' && f.type !== 'EGV' && f.type !== 'ECS' && f.type !== 'EDT' && f.type !== 'ELL') continue
     const sourcePath = join(project.projectDir, f.fileName)
     const editorContent = editorFiles?.get(f.fileName)
     const content = editorContent || (existsSync(sourcePath) ? readFileSync(sourcePath, 'utf-8') : '')
@@ -336,6 +475,65 @@ function collectProjectGlobalVars(project: ProjectInfo, editorFiles?: Map<string
   }
 
   return result
+}
+
+function collectProjectConstants(project: ProjectInfo, editorFiles?: Map<string, string>): ConstantDef[] {
+  const result: ConstantDef[] = []
+  const seen = new Set<string>()
+
+  for (const f of project.files) {
+    if (f.type !== 'EYC' && f.type !== 'EGV' && f.type !== 'ECS' && f.type !== 'EDT' && f.type !== 'ELL') continue
+    const sourcePath = join(project.projectDir, f.fileName)
+    const editorContent = editorFiles?.get(f.fileName)
+    const content = editorContent || (existsSync(sourcePath) ? readFileSync(sourcePath, 'utf-8') : '')
+    if (!content) continue
+
+    const constants = parseConstantDeclarations(content)
+    for (const c of constants) {
+      if (seen.has(c.name)) continue
+      seen.add(c.name)
+      result.push(c)
+    }
+  }
+
+  return result
+}
+
+function collectLibraryConstants(): LibraryConstantDef[] {
+  const result: LibraryConstantDef[] = []
+  const seen = new Set<string>()
+
+  for (const lib of libraryManager.getLoadedLibraryFiles()) {
+    const info = libraryManager.getLibInfo(lib.name)
+    const constants = (info?.constants || []) as LibConstant[]
+    for (const c of constants) {
+      const name = (c.name || '').trim()
+      if (!name || seen.has(name)) continue
+      seen.add(name)
+      result.push({
+        name,
+        value: (c.value || '').trim(),
+        type: c.type || 'null',
+      })
+    }
+  }
+
+  return result
+}
+
+function escapeCString(text: string): string {
+  return text
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+}
+
+function toCLibraryConstantValue(c: LibraryConstantDef): string {
+  if (c.type === 'text') return `L"${escapeCString(c.value)}"`
+  if (c.type === 'bool') return (c.value === '真' || c.value === '1') ? '1' : '0'
+  if (c.type === 'number') return c.value || '0'
+  return '0'
 }
 
 // ========== 基于支持库的命令解析系统 ==========
@@ -367,6 +565,10 @@ function convertFullWidthOps(expr: string): string {
     .replace(/－/g, '-')
     .replace(/×/g, '*')
     .replace(/÷/g, '/')
+}
+
+function replaceConstantRefs(expr: string): string {
+  return expr.replace(/#([\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_.]*)/g, '$1')
 }
 
 // 从行中提取命令名称（括号或空格之前的部分）
@@ -482,7 +684,7 @@ function formatArgForC(arg: string): string {
   // 数值直接传递
   if (/^-?\d+(\.\d+)?$/.test(trimmed)) return trimmed
   // 变量名或表达式：转换全角运算符
-  return convertFullWidthOps(trimmed)
+  return replaceConstantRefs(convertFullWidthOps(trimmed))
 }
 
 // 命令 → C代码生成器（直接按命令名索引，不按库名分组）
@@ -536,9 +738,10 @@ function generateCCodeForCommand(cmd: LibCommand & { libraryName: string }, args
 // .eyc 转 C 代码转译器
 // 将易语言源代码中的子程序转译成 C 函数
 // 命令识别基于已加载的支持库，支持第三方支持库扩展
-function transpileEycContent(eycContent: string, fileName: string, projectGlobals: GlobalVarDef[] = []): string {
+function transpileEycContent(eycContent: string, fileName: string, projectGlobals: GlobalVarDef[] = [], projectConstants: ConstantDef[] = [], libraryConstants: LibraryConstantDef[] = []): string {
   // 从已加载的支持库构建命令查找表
   const commandMap = buildCommandMap()
+  const isClassModuleSource = /\.ecc$/i.test(fileName)
 
   const lines = eycContent.split('\n')
   let result = `/* 由 ycIDE 自动从 ${fileName} 生成 */\n`
@@ -548,6 +751,26 @@ function transpileEycContent(eycContent: string, fileName: string, projectGlobal
     result += '/* 项目全局变量声明 */\n'
     for (const gv of projectGlobals) {
       result += `extern ${mapTypeToCType(gv.type)} ${gv.name};\n`
+    }
+    result += '\n'
+  }
+
+  if (libraryConstants.length > 0) {
+    result += '/* 支持库常量定义 */\n'
+    for (const c of libraryConstants) {
+      result += `#define ${c.name} (${toCLibraryConstantValue(c)})\n`
+    }
+    result += '\n'
+  }
+
+  if (projectConstants.length > 0) {
+    result += '/* 项目常量定义 */\n'
+    for (const c of projectConstants) {
+      const cValue = replaceConstantRefs(convertFullWidthOps((c.value || '0').trim() || '0'))
+      if (libraryConstants.some(lc => lc.name === c.name)) {
+        result += `#undef ${c.name}\n`
+      }
+      result += `#define ${c.name} (${cValue})\n`
     }
     result += '\n'
   }
@@ -596,9 +819,15 @@ function transpileEycContent(eycContent: string, fileName: string, projectGlobal
 
   let inSub = false
   let subName = ''
+  let subParams: Array<{ name: string; type: string }> = []
   let subBody = ''
   let blockIndent = 1
   let loopTempIndex = 0
+
+  const buildSubSignature = (name: string, params: Array<{ name: string; type: string }>): string => {
+    if (params.length === 0) return 'void'
+    return params.map(p => `${mapTypeToCType(p.type)} ${p.name}`).join(', ')
+  }
 
   const emitSubLine = (code: string) => {
     subBody += `${'    '.repeat(Math.max(1, blockIndent))}${code}\n`
@@ -612,13 +841,23 @@ function transpileEycContent(eycContent: string, fileName: string, projectGlobal
     if (line.startsWith('.子程序 ')) {
       // 如果之前有子程序，先输出
       if (inSub && subName) {
-        result += `void ${subName}(void) {\n${subBody}}\n\n`
+        const storage = isClassModuleSource ? 'static ' : ''
+        result += `${storage}void ${subName}(${buildSubSignature(subName, subParams)}) {\n${subBody}}\n\n`
       }
       const parts = line.substring(4).split(',').map(s => s.trim())
       subName = parts[0] || 'unnamed'
+      subParams = []
       subBody = ''
       blockIndent = 1
       inSub = true
+      continue
+    }
+
+    if (inSub && line.startsWith('.参数 ')) {
+      const parts = splitDeclParts(line.substring(3))
+      const paramName = (parts[0] || '').trim()
+      const paramType = (parts[1] || '整数型').trim()
+      if (paramName) subParams.push({ name: paramName, type: paramType })
       continue
     }
 
@@ -697,7 +936,7 @@ function transpileEycContent(eycContent: string, fileName: string, projectGlobal
       const assignMatch = line.match(/^([\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_.]*)\s*＝\s*(.+)$/)
       if (assignMatch) {
         const varName = assignMatch[1]
-        const expr = convertFullWidthOps(assignMatch[2])
+        const expr = replaceConstantRefs(convertFullWidthOps(assignMatch[2]))
         emitSubLine(`${varName} = ${expr};`)
         continue
       }
@@ -729,7 +968,8 @@ function transpileEycContent(eycContent: string, fileName: string, projectGlobal
 
   // 输出最后一个子程序
   if (inSub && subName) {
-    result += `void ${subName}(void) {\n${subBody}}\n\n`
+    const storage = isClassModuleSource ? 'static ' : ''
+    result += `${storage}void ${subName}(${buildSubSignature(subName, subParams)}) {\n${subBody}}\n\n`
   }
 
   return result
@@ -742,10 +982,12 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
 
   let mainCode = '/* 由 ycIDE 自动生成 */\n'
   mainCode += `/* 项目名称: ${project.projectName} */\n\n`
-  mainCode += '#include <windows.h>\n#include <stdio.h>\n#include <io.h>\n#include <fcntl.h>\n\n'
+  mainCode += '#include <windows.h>\n#include <commctrl.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <io.h>\n#include <fcntl.h>\n\n'
 
   const isWindowsApp = project.outputType === 'WindowsApp'
   const projectGlobals = collectProjectGlobalVars(project, editorFiles)
+  const projectConstants = collectProjectConstants(project, editorFiles)
+  const libraryConstants = collectLibraryConstants()
 
   if (isWindowsApp) {
     // 查找启动窗口文件
@@ -826,15 +1068,15 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
     // 前向声明 .eyc 中的子程序
     // 查找关联的 .eyc 文件并转译
     for (const f of project.files) {
-      if (f.type !== 'EYC' && f.type !== 'EGV') continue
+      if (f.type !== 'EYC' && f.type !== 'EGV' && f.type !== 'ECS' && f.type !== 'EDT' && f.type !== 'ELL') continue
       const eycPath = join(project.projectDir, f.fileName)
       const editorContent = editorFiles?.get(f.fileName)
       const content = editorContent || (existsSync(eycPath) ? readFileSync(eycPath, 'utf-8') : '')
       if (!content) continue
 
       sendMessage({ type: 'info', text: `正在转换源文件: ${f.fileName}` })
-      const cCode = transpileEycContent(content, f.fileName, projectGlobals)
-      const cFileName = f.fileName.replace(/\.(eyc|egv)$/i, '.cpp')
+      const cCode = transpileEycContent(content, f.fileName, projectGlobals, projectConstants, libraryConstants)
+      const cFileName = f.fileName.replace(/\.(eyc|ecc|egv|ecs|edt|ell)$/i, '.cpp')
       const cFilePath = join(tempDir, cFileName)
       writeFileSync(cFilePath, cCode, 'utf-8')
       additionalCFiles.push(cFilePath)
@@ -884,16 +1126,76 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
     mainCode += '}\n\n'
 
     // 弱链接事件处理函数
-    const isClickable = (t: string) => ['Button', '按钮', 'ycUI按钮'].includes(t)
+    type CommandEventBinding = { ctrlName: string; notifyCode: string; handlerName: string }
+    type NotifyEventBinding = { ctrlName: string; notifyCode: string; handlerName: string }
+    type ScrollEventBinding = { ctrlName: string; message: 'WM_HSCROLL' | 'WM_VSCROLL'; handlerName: string }
+    const commandEventBindings: CommandEventBinding[] = []
+    const notifyEventBindings: NotifyEventBinding[] = []
+    const scrollEventBindings: ScrollEventBinding[] = []
+    const allUnits = libraryManager.getAllWindowUnits()
+
+    for (const ctrl of winInfo.controls) {
+      const className = getWin32ClassName(ctrl.type)
+      const unit = allUnits.find(u => u.name === ctrl.type || u.englishName === ctrl.type)
+      const events = unit?.events || []
+      for (const ev of events) {
+        const notifyCode = resolveCommandNotifyCode(className, ev.name)
+        const handlerName = `_${ctrl.name.replace(/^_+/, '')}_${ev.name}`
+        if (notifyCode) {
+          commandEventBindings.push({ ctrlName: ctrl.name, notifyCode, handlerName })
+          continue
+        }
+        const nmCode = resolveNotifyCode(className, ev.name)
+        if (nmCode) {
+          notifyEventBindings.push({ ctrlName: ctrl.name, notifyCode: nmCode, handlerName })
+          continue
+        }
+        const scrollMsg = resolveScrollMessage(className, ev.name)
+        if (scrollMsg) {
+          scrollEventBindings.push({ ctrlName: ctrl.name, message: scrollMsg, handlerName })
+        }
+      }
+    }
+
     mainCode += '/* 事件处理函数默认实现 */\n'
     mainCode += '#define WEAK_FUNC __attribute__((weak))\n'
+
+    // 兼容历史按钮事件命名
+    const isClickable = (t: string) => ['Button', '按钮', 'ycUI按钮'].includes(t)
     for (const ctrl of winInfo.controls) {
       if (isClickable(ctrl.type)) {
         mainCode += `WEAK_FUNC void ${ctrl.name}_被单击(void) { }\n`
         mainCode += `WEAK_FUNC void _${ctrl.name.replace(/^_+/, '')}_被单击(void) { ${ctrl.name}_被单击(); }\n`
       }
     }
+
+    const declaredHandlers = new Set<string>()
+    for (const b of commandEventBindings) {
+      if (declaredHandlers.has(b.handlerName)) continue
+      declaredHandlers.add(b.handlerName)
+      mainCode += `WEAK_FUNC void ${b.handlerName}(void) { }\n`
+    }
+    for (const b of notifyEventBindings) {
+      if (declaredHandlers.has(b.handlerName)) continue
+      declaredHandlers.add(b.handlerName)
+      mainCode += `WEAK_FUNC void ${b.handlerName}(void) { }\n`
+    }
+    for (const b of scrollEventBindings) {
+      if (declaredHandlers.has(b.handlerName)) continue
+      declaredHandlers.add(b.handlerName)
+      mainCode += `WEAK_FUNC void ${b.handlerName}(void) { }\n`
+    }
+
     mainCode += 'WEAK_FUNC void __启动窗口_创建完毕(void) { }\n'
+    mainCode += 'WEAK_FUNC void __启动窗口_按下某键(int 键代码, int 功能键状态) { }\n'
+    mainCode += 'WEAK_FUNC void __启动窗口_某键被放开(int 键代码, int 功能键状态) { }\n'
+    mainCode += 'WEAK_FUNC void __启动窗口_窗口尺寸被改变(int 宽度, int 高度) { }\n'
+    mainCode += 'WEAK_FUNC void __启动窗口_被移动(int 左边, int 顶边) { }\n'
+    mainCode += 'WEAK_FUNC void __启动窗口_被激活(int 激活状态) { }\n'
+    mainCode += 'WEAK_FUNC void __启动窗口_得到焦点(void) { }\n'
+    mainCode += 'WEAK_FUNC void __启动窗口_失去焦点(void) { }\n'
+    mainCode += 'WEAK_FUNC void __启动窗口_即将被销毁(void) { }\n'
+    mainCode += 'WEAK_FUNC void __启动窗口_被销毁(void) { }\n'
 
     // 窗口过程
     mainCode += '/* 窗口过程函数 */\n'
@@ -910,18 +1212,70 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
 
     ctrlId = 1001
     for (const ctrl of winInfo.controls) {
-      if (isClickable(ctrl.type)) {
+      const bindings = commandEventBindings.filter(b => b.ctrlName === ctrl.name)
+      const hasCompatClick = isClickable(ctrl.type)
+      if (bindings.length > 0 || hasCompatClick) {
         mainCode += `        case IDC_${ctrl.name.toUpperCase()}:\n`
-        mainCode += '            if (wmEvent == BN_CLICKED) {\n'
-        mainCode += `                _${ctrl.name.replace(/^_+/, '')}_被单击();\n`
-        mainCode += '            }\n'
+        if (hasCompatClick) {
+          mainCode += '            if (wmEvent == BN_CLICKED) {\n'
+          mainCode += `                _${ctrl.name.replace(/^_+/, '')}_被单击();\n`
+          mainCode += '            }\n'
+        }
+        for (const b of bindings) {
+          mainCode += `            if (wmEvent == ${b.notifyCode}) { ${b.handlerName}(); }\n`
+        }
+        mainCode += '            break;\n'
+      }
+      ctrlId++
+    }
+
+    mainCode += '        }\n'
+    mainCode += '        break;\n'
+    mainCode += '    }\n'
+    mainCode += '    case WM_NOTIFY: {\n'
+    mainCode += '        LPNMHDR pnm = (LPNMHDR)lParam;\n'
+    mainCode += '        if (!pnm) break;\n'
+    mainCode += '        switch ((int)pnm->idFrom) {\n'
+
+    ctrlId = 1001
+    for (const ctrl of winInfo.controls) {
+      const bindings = notifyEventBindings.filter(b => b.ctrlName === ctrl.name)
+      if (bindings.length > 0) {
+        mainCode += `        case IDC_${ctrl.name.toUpperCase()}:\n`
+        for (const b of bindings) {
+          mainCode += `            if (pnm->code == ${b.notifyCode}) { ${b.handlerName}(); }\n`
+        }
+        mainCode += '            break;\n'
+      }
+      ctrlId++
+    }
+
+    mainCode += '        }\n'
+    mainCode += '        break;\n'
+    mainCode += '    }\n'
+    mainCode += '    case WM_HSCROLL:\n'
+    mainCode += '    case WM_VSCROLL: {\n'
+    mainCode += '        HWND hScroll = (HWND)lParam;\n'
+    mainCode += '        if (!hScroll) break;\n'
+    mainCode += '        int sid = GetDlgCtrlID(hScroll);\n'
+    mainCode += '        switch (sid) {\n'
+
+    ctrlId = 1001
+    for (const ctrl of winInfo.controls) {
+      const bindings = scrollEventBindings.filter(b => b.ctrlName === ctrl.name)
+      if (bindings.length > 0) {
+        mainCode += `        case IDC_${ctrl.name.toUpperCase()}:\n`
+        for (const b of bindings) {
+          const cond = b.message === 'WM_HSCROLL' ? 'message == WM_HSCROLL' : 'message == WM_VSCROLL'
+          mainCode += `            if (${cond}) { ${b.handlerName}(); }\n`
+        }
         mainCode += '            break;\n'
       }
       ctrlId++
     }
 
     mainCode += '        default:\n'
-    mainCode += '            return DefWindowProcW(hWnd, message, wParam, lParam);\n'
+    mainCode += '            break;\n'
     mainCode += '        }\n'
     mainCode += '        break;\n'
     mainCode += '    }\n'
@@ -931,7 +1285,35 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
     mainCode += '        EndPaint(hWnd, &ps);\n'
     mainCode += '        break;\n'
     mainCode += '    }\n'
+    mainCode += '    case WM_KEYDOWN:\n'
+    mainCode += '    case WM_SYSKEYDOWN:\n'
+    mainCode += '        __启动窗口_按下某键((int)wParam, (int)lParam);\n'
+    mainCode += '        break;\n'
+    mainCode += '    case WM_KEYUP:\n'
+    mainCode += '    case WM_SYSKEYUP:\n'
+    mainCode += '        __启动窗口_某键被放开((int)wParam, (int)lParam);\n'
+    mainCode += '        break;\n'
+    mainCode += '    case WM_SIZE:\n'
+    mainCode += '        __启动窗口_窗口尺寸被改变((int)LOWORD(lParam), (int)HIWORD(lParam));\n'
+    mainCode += '        break;\n'
+    mainCode += '    case WM_MOVE:\n'
+    mainCode += '        __启动窗口_被移动((int)(short)LOWORD(lParam), (int)(short)HIWORD(lParam));\n'
+    mainCode += '        break;\n'
+    mainCode += '    case WM_ACTIVATE:\n'
+    mainCode += '        __启动窗口_被激活((int)LOWORD(wParam));\n'
+    mainCode += '        break;\n'
+    mainCode += '    case WM_SETFOCUS:\n'
+    mainCode += '        __启动窗口_得到焦点();\n'
+    mainCode += '        break;\n'
+    mainCode += '    case WM_KILLFOCUS:\n'
+    mainCode += '        __启动窗口_失去焦点();\n'
+    mainCode += '        break;\n'
+    mainCode += '    case WM_CLOSE:\n'
+    mainCode += '        __启动窗口_即将被销毁();\n'
+    mainCode += '        DestroyWindow(hWnd);\n'
+    mainCode += '        break;\n'
     mainCode += '    case WM_DESTROY:\n'
+    mainCode += '        __启动窗口_被销毁();\n'
     mainCode += '        PostQuitMessage(0);\n'
     mainCode += '        break;\n'
     mainCode += '    default:\n'
@@ -1062,15 +1444,15 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
     // 控制台程序
     // 先转译 .eyc 文件
     for (const f of project.files) {
-      if (f.type !== 'EYC' && f.type !== 'EGV') continue
+      if (f.type !== 'EYC' && f.type !== 'EGV' && f.type !== 'ECS' && f.type !== 'EDT' && f.type !== 'ELL') continue
       const eycPath = join(project.projectDir, f.fileName)
       const editorContent = editorFiles?.get(f.fileName)
       const content = editorContent || (existsSync(eycPath) ? readFileSync(eycPath, 'utf-8') : '')
       if (!content) continue
 
       sendMessage({ type: 'info', text: `正在转换源文件: ${f.fileName}` })
-      const cCode = transpileEycContent(content, f.fileName, projectGlobals)
-      const cFileName = f.fileName.replace(/\.(eyc|egv)$/i, '.cpp')
+      const cCode = transpileEycContent(content, f.fileName, projectGlobals, projectConstants)
+      const cFileName = f.fileName.replace(/\.(eyc|ecc|egv|ecs|edt|ell)$/i, '.cpp')
       const cFilePath = join(tempDir, cFileName)
       writeFileSync(cFilePath, cCode, 'utf-8')
       additionalCFiles.push(cFilePath)
