@@ -54,7 +54,9 @@ Plans:
   2. Maintainer can verify pointer-width, struct-layout/alignment, and callback-signature-sensitive changes were validated per library.
   3. x64 build verification clearly passes for adapted libraries and clearly fails with explicit errors where adaptation is incomplete.
   4. Maintainer can run an x86 comparison lane during migration to diagnose regressions before promotion.
-**Plans**: TBD
+**Plans**: 1 plans
+Plans:
+- [ ] 03-01-PLAN.md — Build deterministic per-library x64 adaptation engine with mandatory dual-arch ABI gates, strict blocked taxonomy, and Phase 3 report/runbook outputs
 
 ### Phase 4: ycIDE Integration Verification
 **Goal**: Migrated libraries are consumable by current ycIDE support-library loading and compile/runtime flows.
