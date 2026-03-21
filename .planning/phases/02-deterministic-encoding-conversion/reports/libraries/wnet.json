@@ -1,0 +1,18 @@
+{
+  "library": "wnet",
+  "sourceRoot": "易语言的功能库",
+  "total": 34,
+  "scanned": 34,
+  "converted": 34,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/wnet_0_Constructor.cpp",
+    "cppCode/wnet_1_Desstructor.cpp",
+    "cppCode/wnet_10_GetUNCPath.cpp",
+    "cppCode/wnet_11_GetLastError.cpp",
+    "cppCode/wnet_2_GetSharedRes.cpp"
+  ],
+  "status": "success"
+}

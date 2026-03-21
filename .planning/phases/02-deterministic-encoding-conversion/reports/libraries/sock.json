@@ -1,0 +1,18 @@
+{
+  "library": "sock",
+  "sourceRoot": "易语言的功能库",
+  "total": 45,
+  "scanned": 45,
+  "converted": 45,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/sock_0_start_server.cpp",
+    "cppCode/sock_1_stop_server.cpp",
+    "cppCode/sock_10_recv_client.cpp",
+    "cppCode/sock_11_send_client.cpp",
+    "cppCode/sock_12_setup_udp.cpp"
+  ],
+  "status": "success"
+}

@@ -1,0 +1,18 @@
+{
+  "library": "portio",
+  "sourceRoot": "易语言的功能库",
+  "total": 26,
+  "scanned": 26,
+  "converted": 26,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/portio_0_PortIn.cpp",
+    "cppCode/portio_1_PortOut.cpp",
+    "cppCode/portio_2_CheckParallelPort.cpp",
+    "cppCode/portio_3_SetECPMode.cpp",
+    "elib/fnshare.cpp"
+  ],
+  "status": "success"
+}

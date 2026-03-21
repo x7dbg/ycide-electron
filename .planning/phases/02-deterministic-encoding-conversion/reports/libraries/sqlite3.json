@@ -1,0 +1,18 @@
+{
+  "library": "sqlite3",
+  "sourceRoot": "易语言的功能库",
+  "total": 252,
+  "scanned": 252,
+  "converted": 252,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/sqlite3_0_QuanJuMingLingYi.cpp",
+    "cppCode/sqlite3_1__bunengshibie_.cpp",
+    "cppCode/sqlite3_10__bunengshibie_.cpp",
+    "cppCode/sqlite3_100_Constructor.cpp",
+    "cppCode/sqlite3_101_CopyConstructor.cpp"
+  ],
+  "status": "success"
+}

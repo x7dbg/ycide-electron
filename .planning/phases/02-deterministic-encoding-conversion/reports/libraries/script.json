@@ -1,0 +1,18 @@
+{
+  "library": "script",
+  "sourceRoot": "易语言的界面库",
+  "total": 23,
+  "scanned": 23,
+  "converted": 23,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "elib/fnshare.cpp",
+    "elib/fnshare.h",
+    "elib/krnllib.h",
+    "elib/lang.h",
+    "elib/lib2.h"
+  ],
+  "status": "success"
+}

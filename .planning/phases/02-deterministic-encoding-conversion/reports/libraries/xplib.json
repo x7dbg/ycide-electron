@@ -1,0 +1,18 @@
+{
+  "library": "xplib",
+  "sourceRoot": "易语言的功能库",
+  "total": 23,
+  "scanned": 23,
+  "converted": 23,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/xplib_0_SetXP.cpp",
+    "elib/fnshare.cpp",
+    "elib/fnshare.h",
+    "elib/krnllib.h",
+    "elib/lang.h"
+  ],
+  "status": "success"
+}

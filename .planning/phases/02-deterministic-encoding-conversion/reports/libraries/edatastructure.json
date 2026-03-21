@@ -1,0 +1,18 @@
+{
+  "library": "edatastructure",
+  "sourceRoot": "易语言的功能库",
+  "total": 119,
+  "scanned": 119,
+  "converted": 119,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/edatastructure_0_CreateNode.cpp",
+    "cppCode/edatastructure_1_FreeNode.cpp",
+    "cppCode/edatastructure_10_GetDateValue.cpp",
+    "cppCode/edatastructure_11_GetTextValue.cpp",
+    "cppCode/edatastructure_12_GetBinValue.cpp"
+  ],
+  "status": "success"
+}

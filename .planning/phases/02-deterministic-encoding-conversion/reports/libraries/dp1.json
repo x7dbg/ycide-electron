@@ -1,0 +1,18 @@
+{
+  "library": "dp1",
+  "sourceRoot": "易语言的功能库",
+  "total": 29,
+  "scanned": 29,
+  "converted": 29,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/dp1_0_Compress.cpp",
+    "cppCode/dp1_1_Uncompress.cpp",
+    "cppCode/dp1_2_GetMD5.cpp",
+    "cppCode/dp1_3_Encrypt.cpp",
+    "cppCode/dp1_4_Decrypt.cpp"
+  ],
+  "status": "success"
+}

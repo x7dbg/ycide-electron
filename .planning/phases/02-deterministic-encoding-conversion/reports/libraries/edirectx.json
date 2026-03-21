@@ -1,0 +1,18 @@
+{
+  "library": "edirectx",
+  "sourceRoot": "易语言的界面库",
+  "total": 23,
+  "scanned": 23,
+  "converted": 23,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "edirectx_cmd_typedef.h",
+    "edirectx_cmdDef.cpp",
+    "edirectx_cmdInfo.cpp",
+    "edirectx_const.cpp",
+    "edirectx_dllMain.cpp"
+  ],
+  "status": "success"
+}

@@ -1,0 +1,18 @@
+{
+  "library": "exmlrpc",
+  "sourceRoot": "易语言的功能库",
+  "total": 51,
+  "scanned": 51,
+  "converted": 51,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/exmlrpc_0_CreateServer.cpp",
+    "cppCode/exmlrpc_1_StartServer.cpp",
+    "cppCode/exmlrpc_10_GetClientCount.cpp",
+    "cppCode/exmlrpc_11_GetAllClient.cpp",
+    "cppCode/exmlrpc_12_Disconnect.cpp"
+  ],
+  "status": "success"
+}

@@ -1,0 +1,18 @@
+{
+  "library": "javalib",
+  "sourceRoot": "易语言的功能库",
+  "total": 88,
+  "scanned": 88,
+  "converted": 88,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/javalib_0_TestFunction.cpp",
+    "cppCode/javalib_1_Create.cpp",
+    "cppCode/javalib_10_AllocObject.cpp",
+    "cppCode/javalib_11_NewObject.cpp",
+    "cppCode/javalib_12_GetObjectClass.cpp"
+  ],
+  "status": "success"
+}

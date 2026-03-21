@@ -1,0 +1,18 @@
+{
+  "library": "ewizard",
+  "sourceRoot": "易语言的功能库",
+  "total": 38,
+  "scanned": 38,
+  "converted": 38,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/ewizard_0_CopyProgram.cpp",
+    "cppCode/ewizard_1_CopyCode.cpp",
+    "cppCode/ewizard_10_SetTemplateVar.cpp",
+    "cppCode/ewizard_11_RemoveTemplateVar.cpp",
+    "cppCode/ewizard_12_ClearModiRec.cpp"
+  ],
+  "status": "success"
+}

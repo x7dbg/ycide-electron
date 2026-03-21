@@ -1,0 +1,18 @@
+{
+  "library": "echartbar",
+  "sourceRoot": "易语言的界面库",
+  "total": 23,
+  "scanned": 23,
+  "converted": 23,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "echartbar_cmd_typedef.h",
+    "echartbar_cmdDef.cpp",
+    "echartbar_cmdInfo.cpp",
+    "echartbar_const.cpp",
+    "echartbar_dllMain.cpp"
+  ],
+  "status": "success"
+}

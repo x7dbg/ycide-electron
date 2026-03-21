@@ -1,0 +1,18 @@
+{
+  "library": "eapi",
+  "sourceRoot": "易语言的功能库",
+  "total": 120,
+  "scanned": 120,
+  "converted": 120,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/eapi_0_GetKeyboardLockState.cpp",
+    "cppCode/eapi_1_SimulateKey.cpp",
+    "cppCode/eapi_10_IsDiskInside.cpp",
+    "cppCode/eapi_11_SimulateKey.cpp",
+    "cppCode/eapi_12_GetDllList.cpp"
+  ],
+  "status": "success"
+}

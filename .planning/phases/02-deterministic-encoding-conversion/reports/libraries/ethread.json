@@ -1,0 +1,18 @@
+{
+  "library": "ethread",
+  "sourceRoot": "易语言的功能库",
+  "total": 54,
+  "scanned": 54,
+  "converted": 54,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/ethread_0_CreateThread.cpp",
+    "cppCode/ethread_1_CreateCriticalSection.cpp",
+    "cppCode/ethread_10_ThreadPoolFree.cpp",
+    "cppCode/ethread_11_ThreadPool_Init.cpp",
+    "cppCode/ethread_12_ThreadPool_AddTask.cpp"
+  ],
+  "status": "success"
+}

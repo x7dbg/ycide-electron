@@ -1,0 +1,18 @@
+{
+  "library": "erawsock",
+  "sourceRoot": "易语言的功能库",
+  "total": 42,
+  "scanned": 42,
+  "converted": 42,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/erawsock_0_CreateSocket.cpp",
+    "cppCode/erawsock_1_CloseSocket.cpp",
+    "cppCode/erawsock_10_OpenAdapter.cpp",
+    "cppCode/erawsock_11_SetAdapter.cpp",
+    "cppCode/erawsock_12_CloseAdapter.cpp"
+  ],
+  "status": "success"
+}

@@ -1,0 +1,18 @@
+{
+  "library": "edb",
+  "sourceRoot": "易语言的界面库",
+  "total": 23,
+  "scanned": 23,
+  "converted": 23,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "edb_cmd_typedef.h",
+    "edb_cmdDef.cpp",
+    "edb_cmdInfo.cpp",
+    "edb_const.cpp",
+    "edb_dllMain.cpp"
+  ],
+  "status": "success"
+}

@@ -1,0 +1,18 @@
+{
+  "library": "shellex",
+  "sourceRoot": "易语言的功能库",
+  "total": 37,
+  "scanned": 37,
+  "converted": 37,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/shellex_0_AddTooltip.cpp",
+    "cppCode/shellex_1_DelTooltip.cpp",
+    "cppCode/shellex_10_RegHotKey.cpp",
+    "cppCode/shellex_11_UnRegHotKey.cpp",
+    "cppCode/shellex_12_GetAddr.cpp"
+  ],
+  "status": "success"
+}

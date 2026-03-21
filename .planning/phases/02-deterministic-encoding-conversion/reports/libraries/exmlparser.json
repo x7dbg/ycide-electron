@@ -1,0 +1,18 @@
+{
+  "library": "exmlparser",
+  "sourceRoot": "易语言的功能库",
+  "total": 62,
+  "scanned": 62,
+  "converted": 62,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/exmlparser_0_CreateNewTree.cpp",
+    "cppCode/exmlparser_1_LoadFrom.cpp",
+    "cppCode/exmlparser_10_GetNodeAttrValue.cpp",
+    "cppCode/exmlparser_11_InsertNode.cpp",
+    "cppCode/exmlparser_12_InsertAttr.cpp"
+  ],
+  "status": "success"
+}

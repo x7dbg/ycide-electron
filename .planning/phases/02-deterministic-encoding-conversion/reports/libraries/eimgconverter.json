@@ -1,0 +1,18 @@
+{
+  "library": "eimgconverter",
+  "sourceRoot": "易语言的功能库",
+  "total": 32,
+  "scanned": 32,
+  "converted": 32,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/eimgconverter_0_ConvertToJPG.cpp",
+    "cppCode/eimgconverter_1_ConvertToBMP.cpp",
+    "cppCode/eimgconverter_2_ConvertToTIF.cpp",
+    "cppCode/eimgconverter_3_ConvertToPNG.cpp",
+    "cppCode/eimgconverter_4_ConvertToPPM.cpp"
+  ],
+  "status": "success"
+}

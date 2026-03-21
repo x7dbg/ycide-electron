@@ -1,0 +1,18 @@
+{
+  "library": "ogrelib",
+  "sourceRoot": "易语言的功能库",
+  "total": 404,
+  "scanned": 404,
+  "converted": 404,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/ogrelib_0_constructor.cpp",
+    "cppCode/ogrelib_1_destructor.cpp",
+    "cppCode/ogrelib_10_SetPriority.cpp",
+    "cppCode/ogrelib_100_constructor.cpp",
+    "cppCode/ogrelib_101_destructor.cpp"
+  ],
+  "status": "success"
+}

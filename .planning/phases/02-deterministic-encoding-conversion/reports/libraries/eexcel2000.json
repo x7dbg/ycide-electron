@@ -1,0 +1,18 @@
+{
+  "library": "eexcel2000",
+  "sourceRoot": "易语言的界面库",
+  "total": 23,
+  "scanned": 23,
+  "converted": 23,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "eexcel2000_cmd_typedef.h",
+    "eexcel2000_cmdDef.cpp",
+    "eexcel2000_cmdInfo.cpp",
+    "eexcel2000_const.cpp",
+    "eexcel2000_dllMain.cpp"
+  ],
+  "status": "success"
+}

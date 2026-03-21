@@ -1,0 +1,18 @@
+{
+  "library": "ecalc",
+  "sourceRoot": "易语言的功能库",
+  "total": 134,
+  "scanned": 134,
+  "converted": 134,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/ecalc_0_ComplexConstruction.cpp",
+    "cppCode/ecalc_1_ComplexDestruction.cpp",
+    "cppCode/ecalc_10_GetImaComplex.cpp",
+    "cppCode/ecalc_100_Neg.cpp",
+    "cppCode/ecalc_101_Round.cpp"
+  ],
+  "status": "success"
+}

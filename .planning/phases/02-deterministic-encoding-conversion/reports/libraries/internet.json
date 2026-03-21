@@ -1,0 +1,18 @@
+{
+  "library": "internet",
+  "sourceRoot": "易语言的功能库",
+  "total": 47,
+  "scanned": 47,
+  "converted": 47,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/internet_0_ConnectSmtpServer.cpp",
+    "cppCode/internet_1_DisconnectSmtpServer.cpp",
+    "cppCode/internet_10_GetFtpFile.cpp",
+    "cppCode/internet_11_PutFtpFile.cpp",
+    "cppCode/internet_12_DeleteFtpFile.cpp"
+  ],
+  "status": "success"
+}

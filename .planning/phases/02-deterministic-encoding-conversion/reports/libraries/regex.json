@@ -1,0 +1,18 @@
+{
+  "library": "regex",
+  "sourceRoot": "易语言的功能库",
+  "total": 40,
+  "scanned": 40,
+  "converted": 40,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/regex_0_Match.cpp",
+    "cppCode/regex_1_Constructor.cpp",
+    "cppCode/regex_10_IsEmpty.cpp",
+    "cppCode/regex_11_GetMatchText.cpp",
+    "cppCode/regex_12_GetSubMatchText.cpp"
+  ],
+  "status": "success"
+}

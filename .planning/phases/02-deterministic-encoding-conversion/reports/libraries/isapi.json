@@ -1,0 +1,18 @@
+{
+  "library": "isapi",
+  "sourceRoot": "易语言的功能库",
+  "total": 105,
+  "scanned": 105,
+  "converted": 105,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/isapi_0_con.cpp",
+    "cppCode/isapi_1_des.cpp",
+    "cppCode/isapi_10_ReadText.cpp",
+    "cppCode/isapi_11_DecodeText.cpp",
+    "cppCode/isapi_12_GetKeyField.cpp"
+  ],
+  "status": "success"
+}

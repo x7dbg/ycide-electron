@@ -1,0 +1,18 @@
+{
+  "library": "deelxregex",
+  "sourceRoot": "易语言的功能库",
+  "total": 66,
+  "scanned": 66,
+  "converted": 66,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/deelxregex_0_Create.cpp",
+    "cppCode/deelxregex_1_Release.cpp",
+    "cppCode/deelxregex_10_GetGroupEnd.cpp",
+    "cppCode/deelxregex_11_MaxGroupNumber.cpp",
+    "cppCode/deelxregex_12_MatchExact.cpp"
+  ],
+  "status": "success"
+}

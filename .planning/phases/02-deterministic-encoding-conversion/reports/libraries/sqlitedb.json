@@ -1,0 +1,18 @@
+{
+  "library": "sqlitedb",
+  "sourceRoot": "易语言的功能库",
+  "total": 252,
+  "scanned": 252,
+  "converted": 252,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/sqlitedb_0_QuanJuMingLingYi.cpp",
+    "cppCode/sqlitedb_1__bunengshibie_.cpp",
+    "cppCode/sqlitedb_10__bunengshibie_.cpp",
+    "cppCode/sqlitedb_100_Constructor.cpp",
+    "cppCode/sqlitedb_101_CopyConstructor.cpp"
+  ],
+  "status": "success"
+}

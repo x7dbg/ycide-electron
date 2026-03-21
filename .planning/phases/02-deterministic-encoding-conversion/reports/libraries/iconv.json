@@ -1,0 +1,18 @@
+{
+  "library": "iconv",
+  "sourceRoot": "易语言的功能库",
+  "total": 26,
+  "scanned": 26,
+  "converted": 26,
+  "skipped": 0,
+  "blocked": 0,
+  "blockedReasons": [],
+  "sampleFiles": [
+    "cppCode/iconv_0_iconv.cpp",
+    "cppCode/iconv_1_iconv_open.cpp",
+    "cppCode/iconv_2_iconv_iconv.cpp",
+    "cppCode/iconv_3_iconv_close.cpp",
+    "elib/fnshare.cpp"
+  ],
+  "status": "success"
+}
