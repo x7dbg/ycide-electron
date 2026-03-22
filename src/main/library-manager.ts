@@ -6,6 +6,9 @@ import { readdirSync, existsSync, readFileSync, writeFileSync } from 'fs'
 import { join, basename, extname, dirname } from 'path'
 import { app } from 'electron'
 import { parseFneFile, type LibInfo, type LibCommand, type LibWindowUnit } from './fne-parser'
+import { deriveBinaryContract } from './contract/binary-contract'
+import { validateBinaryContract } from './contract/contract-validator'
+import type { ContractDiagnostic } from './contract/contract-diagnostics'
 
 /** 核心支持库文件名（不含扩展名） */
 const CORE_LIB_NAME = 'krnln'
@@ -22,7 +25,10 @@ export interface LoadResult {
   success: boolean
   info: LibInfo | null
   error?: string  // 冲突或错误信息
+  diagnostics?: ContractDiagnostic[]
 }
+
+const SUPPORTED_CONTRACT_METADATA_MAJOR_VERSION = 1
 
 class LibraryManager {
   private libraries: LibraryItem[] = []
@@ -178,7 +184,7 @@ class LibraryManager {
   load(name: string): LoadResult {
     const item = this.libraries.find(l => l.name === name)
     if (!item) return { success: false, info: null, error: `未找到支持库 ${name}` }
-    if (item.loaded && item.libInfo) return { success: true, info: item.libInfo }
+    if (item.loaded && item.libInfo) return { success: true, info: item.libInfo, diagnostics: [] }
 
     const info = this.ensureLibInfo(item)
     if (!info) return { success: false, info: null, error: `解析支持库 ${name} 失败` }
@@ -190,11 +196,27 @@ class LibraryManager {
     // 命令名冲突检查
     const cmdConflict = this.checkCommandConflict(info, name)
     if (cmdConflict) return { success: false, info: null, error: cmdConflict }
+    // Ordered gate: checkGuidConflict -> checkCommandConflict -> validateBinaryContract (D6-20)
+
+    // D6-12：加载门禁需明确“可加载/不可加载”分层；校验失败即 blocked
+    const contract = deriveBinaryContract(info, item.filePath)
+    const diagnostics = validateBinaryContract(contract, {
+      supportedMetadataMajorVersion: SUPPORTED_CONTRACT_METADATA_MAJOR_VERSION,
+    })
+    const blockingErrors = diagnostics.filter(d => d.level === 'ERROR')
+    if (blockingErrors.length > 0) {
+      return {
+        success: false,
+        info: null,
+        error: `支持库契约校验失败（blocked）: ${blockingErrors[0].message}`,
+        diagnostics,
+      }
+    }
 
     item.loaded = true
     item.libInfo = info
     this.saveLoadedState()
-    return { success: true, info }
+    return { success: true, info, diagnostics }
   }
 
   /** 卸载指定支持库（核心库不可卸载） */
@@ -213,13 +235,13 @@ class LibraryManager {
   applySelection(selectedNames: string[]): {
     loadedCount: number
     unloadedCount: number
-    failed: Array<{ name: string; error: string }>
+    failed: Array<{ name: string; error: string; diagnostics?: ContractDiagnostic[] }>
   } {
     const selected = new Set(selectedNames)
     selected.add(CORE_LIB_NAME)
     let loadedCount = 0
     let unloadedCount = 0
-    const failed: Array<{ name: string; error: string }> = []
+    const failed: Array<{ name: string; error: string; diagnostics?: ContractDiagnostic[] }> = []
 
     // 先卸载未勾选项（核心库除外）
     for (const item of this.libraries) {
@@ -234,7 +256,11 @@ class LibraryManager {
       if (item.loaded || !selected.has(item.name)) continue
       const result = this.load(item.name)
       if (result.success) loadedCount++
-      else failed.push({ name: item.name, error: result.error || '加载失败' })
+      else failed.push({
+        name: item.name,
+        error: result.error || '加载失败',
+        diagnostics: result.diagnostics,
+      })
     }
 
     this.saveLoadedState()
