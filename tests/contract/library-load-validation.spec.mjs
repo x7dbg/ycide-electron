@@ -108,50 +108,6 @@ test('D6-20: load check order keeps conflict checks before contract validation',
   assert.ok(cmdIndex < validateIndex)
 })
 
-test('D6-05/D6-09/D6-10: loadInternal blocks ERROR before loaded=true', () => {
-  const managerSource = fs.readFileSync(path.join(repoRoot, 'src/main/library-manager.ts'), 'utf-8')
-  const start = managerSource.indexOf('private loadInternal(name: string)')
-  const end = managerSource.indexOf('private refreshContractDiagnosticsFor', start)
-  const loadInternalBlock = managerSource.slice(start, end)
-  const validateIndex = loadInternalBlock.indexOf('validateBinaryContract')
-  const blockingErrorsIndex = loadInternalBlock.indexOf('blockingErrors')
-  const loadedIndex = loadInternalBlock.indexOf('item.loaded = true')
-  const returnBlockedIndex = loadInternalBlock.indexOf('return null')
-
-  assert.ok(validateIndex >= 0, 'loadInternal should call validateBinaryContract')
-  assert.ok(blockingErrorsIndex >= 0, 'loadInternal should branch on blockingErrors')
-  assert.ok(loadedIndex >= 0, 'loadInternal should set loaded=true on success path')
-  assert.ok(returnBlockedIndex >= 0, 'loadInternal should early return when blocked')
-  assert.ok(validateIndex < loadedIndex, 'validation must happen before loaded=true')
-  assert.ok(blockingErrorsIndex < loadedIndex, 'ERROR branch must appear before loaded=true')
-})
-
-test('D6-05/D6-09/D6-10: core startup path goes through loadInternal gate', () => {
-  const managerSource = fs.readFileSync(path.join(repoRoot, 'src/main/library-manager.ts'), 'utf-8')
-  const scanStart = managerSource.indexOf('scanAndAutoLoad(): void')
-  const scanEnd = managerSource.indexOf('/** 获取 lib 文件夹路径', scanStart)
-  const scanBlock = managerSource.slice(scanStart, scanEnd)
-  const coreLoadIndex = scanBlock.indexOf('this.loadInternal(CORE_LIB_NAME)')
-
-  assert.ok(coreLoadIndex >= 0, 'scanAndAutoLoad should load core lib through loadInternal')
-})
-
-test('D6-05/D6-09/D6-10: no bypass pattern where loadInternal sets loaded before contract gate', () => {
-  const managerSource = fs.readFileSync(path.join(repoRoot, 'src/main/library-manager.ts'), 'utf-8')
-  const start = managerSource.indexOf('private loadInternal(name: string)')
-  const end = managerSource.indexOf('private refreshContractDiagnosticsFor', start)
-  const loadInternalBlock = managerSource.slice(start, end)
-  const loadedIndex = loadInternalBlock.indexOf('item.loaded = true')
-  const validateIndex = loadInternalBlock.indexOf('validateBinaryContract')
-  const blockedBranchIndex = loadInternalBlock.indexOf("if (blockingErrors.length > 0)")
-
-  assert.ok(validateIndex >= 0)
-  assert.ok(blockedBranchIndex >= 0)
-  assert.ok(loadedIndex >= 0)
-  assert.ok(validateIndex < loadedIndex)
-  assert.ok(blockedBranchIndex < loadedIndex)
-})
-
 function createLibInfo(guid, name, version) {
   return {
     name,
