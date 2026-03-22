@@ -3,7 +3,6 @@ export type ContractErrorLevel = 'ERROR' | 'INFO'
 export interface ContractDiagnostic {
   level: ContractErrorLevel
   code: string
-  category?: string
   libraryGuid: string
   libraryName: string
   filePath: string
@@ -25,7 +24,7 @@ export function makeFieldPath(basePath: string, ...segments: Array<string | numb
 }
 
 export function makeDiagnostic(input: ContractDiagnostic): ContractDiagnostic {
-  const diagnostic: ContractDiagnostic = {
+  return {
     level: input.level,
     code: input.code,
     libraryGuid: input.libraryGuid,
@@ -35,8 +34,4 @@ export function makeDiagnostic(input: ContractDiagnostic): ContractDiagnostic {
     message: input.message,
     suggestion: input.suggestion,
   }
-  if (input.category) {
-    diagnostic.category = input.category
-  }
-  return diagnostic
 }
