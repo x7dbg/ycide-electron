@@ -141,25 +141,13 @@ class LibraryManager {
     if (item.loaded && item.libInfo) return item.libInfo
 
     const info = this.ensureLibInfo(item)
-    if (!info) return null
-    const diagnostics = this.validateBinaryContractForLoad(info, item.filePath)
-    const blockingErrors = diagnostics.filter(d => d.level === 'ERROR')
-    if (blockingErrors.length > 0) {
-      return null
+    if (info) {
+      item.loaded = true
+      item.libInfo = info
+      this.refreshContractDiagnosticsFor(item)
+      this.saveLoadedState()
     }
-
-    item.loaded = true
-    item.libInfo = info
-    this.refreshContractDiagnosticsFor(item)
-    this.saveLoadedState()
     return info
-  }
-
-  private validateBinaryContractForLoad(info: LibInfo, filePath: string): ContractDiagnostic[] {
-    const contract = deriveBinaryContract(info, filePath)
-    return validateBinaryContract(contract, {
-      supportedMetadataMajorVersion: SUPPORTED_CONTRACT_METADATA_MAJOR_VERSION,
-    })
   }
 
   private refreshContractDiagnosticsFor(item: LibraryItem): void {
@@ -226,7 +214,10 @@ class LibraryManager {
     // Ordered gate: checkGuidConflict -> checkCommandConflict -> validateBinaryContract (D6-20)
 
     // D6-12：加载门禁需明确“可加载/不可加载”分层；校验失败即 blocked
-    const diagnostics = this.validateBinaryContractForLoad(info, item.filePath)
+    const contract = deriveBinaryContract(info, item.filePath)
+    const diagnostics = validateBinaryContract(contract, {
+      supportedMetadataMajorVersion: SUPPORTED_CONTRACT_METADATA_MAJOR_VERSION,
+    })
     const blockingErrors = diagnostics.filter(d => d.level === 'ERROR')
     if (blockingErrors.length > 0) {
       return {
