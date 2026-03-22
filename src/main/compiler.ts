@@ -4,7 +4,6 @@ import { execFile, ChildProcess } from 'child_process'
 import { app, BrowserWindow } from 'electron'
 import { libraryManager } from './library-manager'
 import type { LibCommand, LibConstant } from './fne-parser'
-import type { ContractDiagnostic } from './contract/contract-diagnostics'
 
 // 编译消息类型
 export interface CompileMessage {
@@ -114,11 +113,6 @@ interface NormalizedEventBinding {
   code: string
 }
 
-interface CompileContractGateResult {
-  blocked: boolean
-  diagnostics: ContractDiagnostic[]
-}
-
 // 正在运行的进程
 let runningProcess: ChildProcess | null = null
 
@@ -127,34 +121,6 @@ function sendMessage(msg: CompileMessage): void {
   BrowserWindow.getAllWindows().forEach(w => {
     w.webContents.send('compiler:output', msg)
   })
-}
-
-function serializeContractDiagnostic(diagnostic: ContractDiagnostic): string {
-  return JSON.stringify({
-    level: diagnostic.level,
-    code: diagnostic.code,
-    libraryGuid: diagnostic.libraryGuid,
-    libraryName: diagnostic.libraryName,
-    filePath: diagnostic.filePath,
-    fieldPath: diagnostic.fieldPath,
-    message: diagnostic.message,
-    suggestion: diagnostic.suggestion,
-  })
-}
-
-export function evaluateCompileContractGate(getDiagnostics: () => ContractDiagnostic[] = () => libraryManager.getLoadedContractDiagnostics()): CompileContractGateResult {
-  const diagnostics = getDiagnostics().map(item => ({
-    level: item.level,
-    code: item.code,
-    libraryGuid: item.libraryGuid,
-    libraryName: item.libraryName,
-    filePath: item.filePath,
-    fieldPath: item.fieldPath,
-    message: item.message,
-    suggestion: item.suggestion,
-  }))
-  const blocked = diagnostics.some(item => item.level === 'ERROR')
-  return { blocked, diagnostics }
 }
 
 // 获取应用目录（开发模式下是项目根目录）
@@ -1696,23 +1662,6 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
   const startTime = Date.now()
 
   try {
-    // D6-06/D6-08/D6-11: strict compile gate runs before codegen/toolchain and ignores sidecar pass paths.
-    const gate = evaluateCompileContractGate()
-    if (gate.blocked) {
-      const errors = gate.diagnostics.filter(item => item.level === 'ERROR')
-      sendMessage({
-        type: 'error',
-        text: `错误: 已加载支持库存在契约 ERROR，编译已阻止（${errors.length} 条）`,
-      })
-      for (const diagnostic of gate.diagnostics) {
-        const type = diagnostic.level === 'ERROR' ? 'error' : 'info'
-        sendMessage({ type, text: serializeContractDiagnostic(diagnostic) })
-      }
-      result.errorCount = errors.length
-      result.elapsedMs = Date.now() - startTime
-      return result
-    }
-
     // 查找 .epp 文件
     const projectDir = options.projectDir
     const eppFiles = readdirSync(projectDir).filter(f => f.endsWith('.epp'))
