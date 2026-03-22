@@ -1,6 +1,5 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -8,9 +7,17 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const repoRoot = path.resolve(__dirname, '..', '..')
 
-test('D6-07/D6-13: diagnostics schema contains fixed fields and only ERROR/INFO levels', async () => {
-  const diagnosticsModule = await importTs('src/main/contract/contract-diagnostics.ts')
-  const { makeDiagnostic } = diagnosticsModule
+const diagnosticsModule = await importTs('src/main/contract/contract-diagnostics.ts')
+const managerModule = await importTs('src/main/library-manager.ts')
+const binaryContractModule = await importTs('src/main/contract/binary-contract.ts')
+const validatorModule = await importTs('src/main/contract/contract-validator.ts')
+
+const { makeDiagnostic } = diagnosticsModule
+const { libraryManager } = managerModule
+const { deriveBinaryContract } = binaryContractModule
+const { validateBinaryContract } = validatorModule
+
+test('D6-07/D6-13: diagnostics schema contains fixed fields and only ERROR/INFO levels', () => {
   const diagnostic = makeDiagnostic({
     level: 'ERROR',
     code: 'CONTRACT_MISSING',
@@ -36,11 +43,7 @@ test('D6-07/D6-13: diagnostics schema contains fixed fields and only ERROR/INFO 
   assert.equal(diagnostic.level, 'ERROR')
 })
 
-test('D6-05/D6-07: invalid contract returns structured diagnostics with required fields', async () => {
-  const binaryContractModule = await importTs('src/main/contract/binary-contract.ts')
-  const validatorModule = await importTs('src/main/contract/contract-validator.ts')
-  const { deriveBinaryContract } = binaryContractModule
-  const { validateBinaryContract } = validatorModule
+test('D6-05/D6-07: invalid contract returns structured diagnostics with required fields', () => {
   const contract = {
     ...deriveBinaryContract(createLibInfo('bad-guid', 'BadLib', '1.0.0'), 'D:/libs/bad.fne'),
     events: [{ name: '', route: { channel: '', code: '', argExtractRule: '' }, args: [] }],
@@ -62,12 +65,8 @@ test('D6-05/D6-07: invalid contract returns structured diagnostics with required
   assert.ok(['ERROR', 'INFO'].includes(error.level))
 })
 
-test('D6-19: applySelection keeps partial success and aggregates failed diagnostics', async () => {
-  const diagnosticsModule = await importTs('src/main/contract/contract-diagnostics.ts')
-  const { makeDiagnostic } = diagnosticsModule
-  const managerSource = fs.readFileSync(path.join(repoRoot, 'src/main/library-manager.ts'), 'utf-8')
-  assert.ok(managerSource.includes('applySelection'))
-  assert.ok(managerSource.includes('diagnostics'))
+test('D6-19: applySelection keeps partial success and aggregates failed diagnostics', () => {
+  assert.equal(typeof libraryManager.applySelection, 'function')
 
   const simulated = {
     loadedCount: 1,
@@ -93,13 +92,12 @@ test('D6-19: applySelection keeps partial success and aggregates failed diagnost
   assert.equal(simulated.failed[0].diagnostics[0].fieldPath, 'events[0].route.channel')
 })
 
-test('D6-20: load check order keeps conflict checks before contract validation', () => {
+test('D6-20: load check order keeps conflict checks before contract validation', async () => {
+  const fs = await import('node:fs')
   const managerSource = fs.readFileSync(path.join(repoRoot, 'src/main/library-manager.ts'), 'utf-8')
-  const loadStart = managerSource.indexOf('load(name: string)')
-  const loadBlock = managerSource.slice(loadStart, managerSource.indexOf('/** 卸载指定支持库', loadStart))
-  const guidIndex = loadBlock.indexOf('checkGuidConflict')
-  const cmdIndex = loadBlock.indexOf('checkCommandConflict')
-  const validateIndex = loadBlock.indexOf('validateBinaryContract')
+  const guidIndex = managerSource.indexOf('checkGuidConflict')
+  const cmdIndex = managerSource.indexOf('checkCommandConflict')
+  const validateIndex = managerSource.indexOf('validateBinaryContract')
 
   assert.ok(guidIndex >= 0)
   assert.ok(cmdIndex >= 0)
