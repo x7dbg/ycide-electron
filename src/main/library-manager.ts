@@ -32,6 +32,7 @@ const SUPPORTED_CONTRACT_METADATA_MAJOR_VERSION = 1
 
 class LibraryManager {
   private libraries: LibraryItem[] = []
+  private loadedContractDiagnostics = new Map<string, ContractDiagnostic[]>()
 
   /** 确保库元信息已解析（用于未加载库的名称/版本展示） */
   private ensureLibInfo(item: LibraryItem): LibInfo | null {
@@ -96,6 +97,7 @@ class LibraryManager {
   /** 扫描支持库文件夹，查找所有 .fne 文件 */
   scan(customFolder?: string): ReturnType<LibraryManager['getList']> {
     this.libraries = []
+    this.loadedContractDiagnostics.clear()
     const libFolder = customFolder || this.getLibFolder()
     const found = new Set<string>()
 
@@ -142,9 +144,22 @@ class LibraryManager {
     if (info) {
       item.loaded = true
       item.libInfo = info
+      this.refreshContractDiagnosticsFor(item)
       this.saveLoadedState()
     }
     return info
+  }
+
+  private refreshContractDiagnosticsFor(item: LibraryItem): void {
+    if (!item.loaded || !item.libInfo) {
+      this.loadedContractDiagnostics.delete(item.name)
+      return
+    }
+    const contract = deriveBinaryContract(item.libInfo, item.filePath)
+    const diagnostics = validateBinaryContract(contract, {
+      supportedMetadataMajorVersion: SUPPORTED_CONTRACT_METADATA_MAJOR_VERSION,
+    })
+    this.loadedContractDiagnostics.set(item.name, diagnostics)
   }
 
   /** 检查 GUID 冲突 */
@@ -215,6 +230,7 @@ class LibraryManager {
 
     item.loaded = true
     item.libInfo = info
+    this.refreshContractDiagnosticsFor(item)
     this.saveLoadedState()
     return { success: true, info, diagnostics }
   }
@@ -227,6 +243,7 @@ class LibraryManager {
     const item = this.libraries.find(l => l.name === name)
     if (!item || !item.loaded) return { success: false, error: '该支持库未加载' }
     item.loaded = false
+    this.loadedContractDiagnostics.delete(item.name)
     this.saveLoadedState()
     return { success: true }
   }
@@ -371,6 +388,23 @@ class LibraryManager {
         fnePath: l.filePath,
         libName: l.libInfo!.name || l.name,
       }))
+  }
+
+  /** 获取已加载支持库的契约诊断快照（用于编译门禁，级别仅 ERROR/INFO） */
+  getLoadedContractDiagnostics(): ContractDiagnostic[] {
+    const diagnostics: ContractDiagnostic[] = []
+    for (const item of this.libraries) {
+      if (!item.loaded || !item.libInfo) continue
+      const cached = this.loadedContractDiagnostics.get(item.name)
+      if (cached) {
+        diagnostics.push(...cached)
+        continue
+      }
+      this.refreshContractDiagnosticsFor(item)
+      const refreshed = this.loadedContractDiagnostics.get(item.name)
+      if (refreshed) diagnostics.push(...refreshed)
+    }
+    return diagnostics.map(d => ({ ...d }))
   }
 }
 
