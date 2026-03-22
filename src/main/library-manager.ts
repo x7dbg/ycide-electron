@@ -9,9 +9,15 @@ import { parseFneFile, type LibInfo, type LibCommand, type LibWindowUnit } from 
 import { deriveBinaryContract } from './contract/binary-contract'
 import { validateBinaryContract } from './contract/contract-validator'
 import type { ContractDiagnostic } from './contract/contract-diagnostics'
+import {
+  evaluateLibraryCompatibility,
+  groupRepairChecklistByLibraryCategoryField,
+  sortDiagnosticsStableByLibrary,
+} from './contract/compatibility-gate'
 
 /** 核心支持库文件名（不含扩展名） */
 const CORE_LIB_NAME = 'krnln'
+const DEFAULT_COMPILER_FEATURES = ['event-protocol', 'window-unit-protocol']
 
 export interface LibraryItem {
   name: string         // 文件名（不含扩展名，如 krnln）
@@ -413,8 +419,34 @@ class LibraryManager {
       const refreshed = this.loadedContractDiagnostics.get(item.name)
       if (refreshed) diagnostics.push(...refreshed)
     }
-    return diagnostics.map(d => ({ ...d }))
+    const compatibilityDiagnostics = evaluateLibraryCompatibility(
+      this.libraries
+        .filter(item => item.loaded && item.libInfo)
+        .map(item => ({
+          libraryGuid: item.libInfo?.guid || '',
+          libraryName: item.libInfo?.name || item.name,
+          filePath: item.filePath,
+          metadataMajorVersion: deriveBinaryContract(item.libInfo!, item.filePath).metadataMajorVersion,
+          requiredCompilerVersion: item.libInfo?.requiredCompilerVersion || undefined,
+          requiredFeatures: item.libInfo?.requiredFeatures || [],
+        })),
+      {
+        compilerVersion: app.getVersion(),
+        supportedMetadataMajorVersion: SUPPORTED_CONTRACT_METADATA_MAJOR_VERSION,
+        supportedFeatures: DEFAULT_COMPILER_FEATURES,
+      }
+    )
+    return sortDiagnosticsStableByLibrary([
+      ...diagnostics.map(d => ({ ...d })),
+      ...compatibilityDiagnostics,
+    ])
+  }
+
+  /** 获取已加载支持库的修复清单（library -> category -> fieldPath） */
+  getLoadedRepairChecklist(): ReturnType<typeof groupRepairChecklistByLibraryCategoryField> {
+    return groupRepairChecklistByLibraryCategoryField(this.getLoadedContractDiagnostics())
   }
 }
 
 export const libraryManager = new LibraryManager()
+export { groupRepairChecklistByLibraryCategoryField }
