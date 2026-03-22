@@ -436,9 +436,10 @@ class LibraryManager {
         supportedFeatures: DEFAULT_COMPILER_FEATURES,
       }
     )
+    const compatDiagnostics = compatibilityDiagnostics.filter(item => item.code.startsWith('COMPAT-'))
     return sortDiagnosticsStableByLibrary([
       ...diagnostics.map(d => ({ ...d })),
-      ...compatibilityDiagnostics,
+      ...compatDiagnostics,
     ])
   }
 
