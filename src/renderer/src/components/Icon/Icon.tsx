@@ -14,8 +14,9 @@ import LibrarySvg from '../../assets/icons/Library.svg?raw'
 import ToolboxSvg from '../../assets/icons/Toolbox.svg?raw'
 import CollapseLeftSvg from '../../assets/icons/CollapseLeft.svg?raw'
 import ExpandRightSvg from '../../assets/icons/ExpandRight.svg?raw'
-import SourceControlSvg from '../../assets/icons/SourceControl.svg?raw'
-import ExtensionSvg from '../../assets/icons/Extension.svg?raw'
+import ZoomSvg from '../../assets/icons/Zoom.svg?raw'
+import BranchSvg from '../../assets/icons/Branch.svg?raw'
+import ExtensionApplicationSvg from '../../assets/icons/ExtensionApplication.svg?raw'
 import UserSvg from '../../assets/icons/User.svg?raw'
 
 // Debug icons
@@ -45,7 +46,7 @@ import MethodSvg from '../../assets/icons/Method.svg?raw'
 import WindowsFormSvg from '../../assets/icons/WindowsForm.svg?raw'
 import ProcedureSvg from '../../assets/icons/Procedure.svg?raw'
 import ClassSvg from '../../assets/icons/Class.svg?raw'
-import ResourceViewSvg from '../../assets/icons/ResourceView.svg?raw'
+import DocumentCollectionSvg from '../../assets/icons/DocumentCollection.svg?raw'
 import EventSvg from '../../assets/icons/Event.svg?raw'
 import PropertySvg from '../../assets/icons/Property.svg?raw'
 
@@ -100,8 +101,9 @@ export const ICON_MAP: Record<string, string> = {
   'toolbox': ToolboxSvg,
   'collapse-left': CollapseLeftSvg,
   'expand-right': ExpandRightSvg,
-  'source-control': SourceControlSvg,
-  'extension': ExtensionSvg,
+  'search': ZoomSvg,
+  'source-control': BranchSvg,
+  'extension': ExtensionApplicationSvg,
   'account': UserSvg,
 
   // Alignment
@@ -123,7 +125,7 @@ export const ICON_MAP: Record<string, string> = {
   'windows-form': WindowsFormSvg,
   'procedure': ProcedureSvg,
   'class': ClassSvg,
-  'resource-view': ResourceViewSvg,
+  'resource-view': DocumentCollectionSvg,
   'event': EventSvg,
   'property': PropertySvg,
 

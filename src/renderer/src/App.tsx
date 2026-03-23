@@ -1357,7 +1357,9 @@ function App(): React.JSX.Element {
 
   const openLibraryPanel = useCallback(() => {
     setSidebarCollapsed(false)
-    setSidebarTab('library')
+    setSidebarTab('project')
+    setShowOutput(true)
+    setOutputMessages(prev => [...prev, { type: 'info', text: '插件功能正在开发中。' }])
   }, [])
 
   const openScmPanel = useCallback(() => {
@@ -1365,6 +1367,13 @@ function App(): React.JSX.Element {
     setSidebarTab('project')
     setShowOutput(true)
     setOutputMessages(prev => [...prev, { type: 'info', text: '源代码管理功能正在开发中。' }])
+  }, [])
+
+  const openSearchPanel = useCallback(() => {
+    setSidebarCollapsed(false)
+    setSidebarTab('project')
+    setShowOutput(true)
+    setOutputMessages(prev => [...prev, { type: 'info', text: '搜索功能正在开发中。' }])
   }, [])
 
   const openUserPanel = useCallback(() => {
@@ -1417,6 +1426,15 @@ function App(): React.JSX.Element {
             onClick={openProjectExplorer}
           >
             <Icon name="resource-view" size={20} />
+          </button>
+          <button
+            type="button"
+            className="activity-button"
+            title="搜索"
+            aria-label="搜索"
+            onClick={openSearchPanel}
+          >
+            <Icon name="search" size={20} />
           </button>
           <button
             type="button"
