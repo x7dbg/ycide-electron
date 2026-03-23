@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useImperativeHandle, forwardRef, Component, type ErrorInfo, type ReactNode } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo, useImperativeHandle, forwardRef, Component, type ErrorInfo, type ReactNode } from 'react'
 import MonacoEditor, { OnMount, OnChange, type Monaco } from '@monaco-editor/react'
 import type { editor } from 'monaco-editor'
 import EycTableEditor, { type EycTableEditorHandle, type FileProblem } from './EycTableEditor'
@@ -16,7 +16,7 @@ function registerEycLanguage(monaco: Monaco): void {
   // 注册语言
   monaco.languages.register({
     id: 'eyc',
-    extensions: ['.eyc', '.egv', '.ecs', '.edt', '.ell'],
+      extensions: ['.eyc', '.egv', '.ecs', '.edt', '.ell', '.erc'],
     aliases: ['易语言源码', 'EYC', 'eyc'],
   })
 
@@ -283,7 +283,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
   }
 
   const getTabSaveContent = (tab: EditorTab): string => {
-    if (tab.language === 'eyc' || tab.language === 'egv' || tab.language === 'ecs' || tab.language === 'edt' || tab.language === 'ell') return eycToYiFormat(tab.value)
+    if (tab.language === 'eyc' || tab.language === 'egv' || tab.language === 'ecs' || tab.language === 'edt' || tab.language === 'ell' || tab.language === 'erc') return eycToYiFormat(tab.value)
     return getTabPersistContent(tab)
   }
 
@@ -294,7 +294,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
   }, [onSidebarTab])
 
   const normalizeIncomingTab = (tab: EditorTab): EditorTab => {
-    if (tab.language !== 'eyc' && tab.language !== 'egv' && tab.language !== 'ecs' && tab.language !== 'edt' && tab.language !== 'ell') return tab
+    if (tab.language !== 'eyc' && tab.language !== 'egv' && tab.language !== 'ecs' && tab.language !== 'edt' && tab.language !== 'ell' && tab.language !== 'erc') return tab
     return {
       ...tab,
       value: eycToInternalFormat(tab.value),
@@ -448,7 +448,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
       const dir = oldFilePath.replace(/[\\/][^\\/]+$/, '')
       const newFilePath = (dir ? dir + '\\' : '') + newFileName
 
-      const sourceLangSet = new Set(['eyc', 'egv', 'ecs', 'edt', 'ell'])
+      const sourceLangSet = new Set(['eyc', 'egv', 'ecs', 'edt', 'ell', 'erc'])
       const openSourcePaths: string[] = []
 
       const updatedTabs = prev.map(t => {
@@ -705,7 +705,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
     hasModifiedTabs: () => tabs.some(t => isTabModified(t)),
     editorAction: (action: string) => {
       const active = tabs.find(t => t.id === activeTabId)
-      if (active?.language === 'eyc' || active?.language === 'egv' || active?.language === 'ecs' || active?.language === 'edt' || active?.language === 'ell') {
+      if (active?.language === 'eyc' || active?.language === 'egv' || active?.language === 'ecs' || active?.language === 'edt' || active?.language === 'ell' || active?.language === 'erc') {
         eycEditorRef.current?.editorAction(action)
         return
       }
@@ -729,7 +729,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
         const fileName = t.filePath?.replace(/^.*[\\/]/, '') || t.label
         if (t.language === 'efw' && t.formData) {
           files[fileName] = JSON.stringify(t.formData, null, 2)
-        } else if (t.language === 'eyc' || t.language === 'egv' || t.language === 'ecs' || t.language === 'edt' || t.language === 'ell') {
+        } else if (t.language === 'eyc' || t.language === 'egv' || t.language === 'ecs' || t.language === 'edt' || t.language === 'ell' || t.language === 'erc') {
           files[fileName] = eycToYiFormat(t.value)
         } else {
           files[fileName] = t.value
@@ -820,7 +820,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
     onActiveTabChange?.(activeTabId)
     const activeTab = tabs.find(t => t.id === activeTabId)
     if (activeTab) {
-      const langMap: Record<string, string> = { eyc: '易语言源码', egv: '全局变量', ecs: '常量表', edt: '自定义数据类型', ell: 'DLL命令', efw: '窗口设计', typescript: 'TypeScript', javascript: 'JavaScript', html: 'HTML', css: 'CSS', json: 'JSON', python: 'Python', plaintext: '纯文本' }
+      const langMap: Record<string, string> = { eyc: '易语言源码', egv: '全局变量', ecs: '常量表', edt: '自定义数据类型', ell: 'DLL命令', erc: '资源表', efw: '窗口设计', typescript: 'TypeScript', javascript: 'JavaScript', html: 'HTML', css: 'CSS', json: 'JSON', python: 'Python', plaintext: '纯文本' }
       onDocTypeChange?.(langMap[activeTab.language] || activeTab.language)
     } else {
       onDocTypeChange?.('')
@@ -851,7 +851,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
 
       // 优先使用已打开标签页中的最新内容（含未保存修改）
       for (const t of tabs) {
-        if ((t.language === 'egv' || t.language === 'eyc' || t.language === 'ecs' || t.language === 'edt' || t.language === 'ell') && t.value) {
+        if ((t.language === 'egv' || t.language === 'eyc' || t.language === 'ecs' || t.language === 'edt' || t.language === 'ell' || t.language === 'erc') && t.value) {
           parseGlobalVars(eycToYiFormat(t.value), vars)
         }
       }
@@ -966,7 +966,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
 
       // 优先使用已打开标签页中的最新内容（含未保存修改）
       for (const t of tabs) {
-        if ((t.language === 'ell' || t.language === 'eyc' || t.language === 'egv' || t.language === 'ecs' || t.language === 'edt') && t.value) {
+        if ((t.language === 'ell' || t.language === 'eyc' || t.language === 'egv' || t.language === 'ecs' || t.language === 'edt' || t.language === 'erc') && t.value) {
           parseDllCommands(eycToYiFormat(t.value), commands)
         }
       }
@@ -1246,6 +1246,40 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
   }, [activeTabId, tabs])
 
   const activeTab = tabs.find(t => t.id === activeTabId) || tabs[0] || null
+  const activeWindowControls = useMemo(() => {
+    if (!activeTab) return [] as Array<{ name: string; type: string }>
+    const isSourceTab = activeTab.language === 'eyc' || activeTab.language === 'egv' || activeTab.language === 'ecs' || activeTab.language === 'edt' || activeTab.language === 'ell' || activeTab.language === 'erc'
+    if (!isSourceTab) return [] as Array<{ name: string; type: string }>
+
+    const sourceFileName = (activeTab.filePath?.split(/[\\/]/).pop() || activeTab.label).toLowerCase()
+    const matchedFormTab = tabs.find(t => {
+      if (t.language !== 'efw' || !t.formData) return false
+      const linkedSource = (t.formData.sourceFile || `${t.formData.name}.eyc`).toLowerCase()
+      return linkedSource === sourceFileName
+    })
+
+    if (!matchedFormTab?.formData) return [] as Array<{ name: string; type: string }>
+
+    const items: Array<{ name: string; type: string }> = []
+    const seen = new Set<string>()
+    const add = (name: string, type: string): void => {
+      const n = (name || '').trim()
+      const t = (type || '').trim()
+      if (!n || seen.has(n)) return
+      seen.add(n)
+      items.push({ name: n, type: t })
+    }
+
+    add(matchedFormTab.formData.name, '窗口')
+    for (const control of matchedFormTab.formData.controls) {
+      add(control.name, control.type)
+    }
+    return items
+  }, [activeTab, tabs])
+
+  const activeWindowControlNames = useMemo(() => {
+    return activeWindowControls.map(c => c.name)
+  }, [activeWindowControls])
 
   const handleEditorMount: OnMount = useCallback((editorInstance, monaco) => {
     editorRef.current = editorInstance
@@ -1338,7 +1372,7 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
             onControlDoubleClick={handleControlDblClick}
             onFormDoubleClick={handleFormDblClick}
           />
-        ) : (activeTab.language === 'eyc' || activeTab.language === 'egv' || activeTab.language === 'ecs' || activeTab.language === 'edt' || activeTab.language === 'ell') ? (
+        ) : (activeTab.language === 'eyc' || activeTab.language === 'egv' || activeTab.language === 'ecs' || activeTab.language === 'edt' || activeTab.language === 'ell' || activeTab.language === 'erc') ? (
           eycFallbackTabs[activeTab.id] ? (
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', background: '#2d2d2d', borderBottom: '1px solid #3a3a3a' }}>
@@ -1466,8 +1500,13 @@ const Editor = forwardRef<EditorHandle, { onSelectControl?: (target: SelectionTa
               <EycTableEditor
                 ref={eycEditorRef}
                 value={activeTab.value}
+                docLanguage={activeTab.language}
+                projectDir={projectDir}
                 isClassModule={activeTab.label.toLowerCase().endsWith('.ecc')}
                 projectGlobalVars={projectGlobalVars}
+                windowControlNames={activeWindowControlNames}
+                windowControlTypes={activeWindowControls}
+                windowUnits={windowUnits}
                 projectConstants={projectConstants}
                 projectDllCommands={projectDllCommands}
                 projectDataTypes={projectDataTypes}
@@ -1601,6 +1640,7 @@ function getFileIcon(language: string): ReactNode {
   const iconNameMap: Record<string, string> = {
     eyc: 'edit',
     eyw: 'windows-form',
+    erc: 'resource-view',
   }
   const iconName = iconNameMap[language]
   if (iconName) return <Icon name={iconName} size={14} />
@@ -1623,6 +1663,7 @@ function getTabLabelClass(language: string): string {
     ecs: 'tab-label-ecs',
     edt: 'tab-label-edt',
     ell: 'tab-label-ell',
+    erc: 'tab-label-resource',
     efw: 'tab-label-efw',
     typescript: 'tab-label-ts',
     javascript: 'tab-label-js',

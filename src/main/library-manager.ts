@@ -269,13 +269,13 @@ class LibraryManager {
   }
 
   /** 获取所有已加载的命令 */
-  getAllCommands(): (LibCommand & { libraryName: string })[] {
-    const cmds: (LibCommand & { libraryName: string })[] = []
+  getAllCommands(): (LibCommand & { libraryName: string; libraryFileName: string })[] {
+    const cmds: (LibCommand & { libraryName: string; libraryFileName: string })[] = []
     for (const item of this.libraries) {
       if (item.loaded && item.libInfo) {
         const libName = item.libInfo.name || ''
         for (const cmd of item.libInfo.commands) {
-          cmds.push({ ...cmd, libraryName: libName })
+          cmds.push({ ...cmd, libraryName: libName, libraryFileName: item.name })
         }
       }
     }

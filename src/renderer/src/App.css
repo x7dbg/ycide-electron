@@ -11,6 +11,73 @@
   overflow: hidden;
 }
 
+.app-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.app-side {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.activity-bar {
+  width: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+  background: var(--bg-tertiary);
+  border-right: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.activity-button {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.activity-button:hover {
+  background: var(--bg-hover);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+.activity-button.active {
+  background: var(--bg-active);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.activity-button .vs-icon {
+  filter: brightness(0) invert(1);
+  opacity: 0.9;
+}
+
+.activity-button.active .vs-icon,
+.activity-button:hover .vs-icon {
+  opacity: 1;
+}
+
+.activity-button-bottom {
+  margin-top: auto;
+  margin-bottom: 8px;
+}
+
 .app-main {
   display: flex;
   flex-direction: column;

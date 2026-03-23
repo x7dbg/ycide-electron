@@ -16,14 +16,27 @@ interface MenuDef {
   items: MenuItem[]
 }
 
-function buildMenus(hasProject: boolean, hasOpenFile: boolean, themes: string[], currentTheme: string): MenuDef[] {
+interface RecentOpenedItem {
+  type: 'project' | 'file'
+  path: string
+  label: string
+}
+
+function buildMenus(hasProject: boolean, hasOpenFile: boolean, themes: string[], currentTheme: string, recentOpened: RecentOpenedItem[]): MenuDef[] {
   const np = !hasProject
   const nf = !hasOpenFile
+  const recentSubmenu: MenuItem[] = recentOpened.length > 0
+    ? recentOpened.slice(0, 10).map(item => ({
+      label: `${item.type === 'project' ? '项目' : '文件'}: ${item.label}`,
+      action: `file:openRecent:${encodeURIComponent(JSON.stringify({ type: item.type, path: item.path }))}`,
+    }))
+    : [{ label: '(空)', disabled: true }]
   return [
     { label: '文件(F)', items: [
       { label: '新建项目(N)', shortcut: 'Ctrl+Shift+N', action: 'file:newProject' },
       { label: '', divider: true },
       { label: '打开项目(P)', shortcut: 'Ctrl+Shift+O', action: 'file:openProject' },
+      { label: '最近打开', submenu: recentSubmenu },
       { label: '', divider: true },
       { label: '保存(S)', shortcut: 'Ctrl+S', action: 'file:save', disabled: nf },
       { label: '保存全部(L)', shortcut: 'Ctrl+Shift+S', action: 'file:saveAll', disabled: nf },
@@ -109,10 +122,11 @@ interface TitleBarProps {
   hasOpenFile?: boolean
   themes?: string[]
   currentTheme?: string
+  recentOpened?: RecentOpenedItem[]
 }
 
-function TitleBar({ onMenuAction, onWindowClose, hasProject = false, hasOpenFile = false, themes = [], currentTheme = '' }: TitleBarProps): React.JSX.Element {
-  const menus = buildMenus(hasProject, hasOpenFile, themes, currentTheme)
+function TitleBar({ onMenuAction, onWindowClose, hasProject = false, hasOpenFile = false, themes = [], currentTheme = '', recentOpened = [] }: TitleBarProps): React.JSX.Element {
+  const menus = buildMenus(hasProject, hasOpenFile, themes, currentTheme, recentOpened)
   const [openMenu, setOpenMenu] = useState<number | null>(null)
   const menuBarRef = useRef<HTMLDivElement>(null)
 

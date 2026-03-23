@@ -768,6 +768,11 @@
   color: #dcdcaa;
 }
 
+/* 普通代码行中的用户子程序引用 — 褐色 */
+.eyc-subrefcolor {
+  color: #a0522d;
+}
+
 /* 可点击的命令名 */
 
 
@@ -1022,6 +1027,167 @@
 
 .eyc-ac-detail-param-desc {
   color: #b0b0b0;
+}
+
+.eyc-resource-preview-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2500;
+  animation: eyc-resource-preview-fade-in 280ms ease-out;
+}
+
+.eyc-resource-preview-modal {
+  width: min(900px, 92vw);
+  max-height: 86vh;
+  background: #1f2329;
+  border: 1px solid #3b4048;
+  border-radius: 8px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.42);
+  display: flex;
+  flex-direction: column;
+  animation: eyc-resource-preview-modal-in 340ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform-origin: center top;
+}
+
+
+@keyframes eyc-resource-preview-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes eyc-resource-preview-modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.eyc-resource-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid #343a42;
+}
+
+.eyc-resource-preview-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #d8dde6;
+}
+
+.eyc-resource-preview-close {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #4a5160;
+  background: #2a3038;
+  border-radius: 4px;
+  padding: 0;
+  cursor: pointer;
+}
+
+.eyc-resource-preview-close:hover {
+  background: #323a44;
+}
+
+.eyc-resource-preview-close-icon {
+  width: 16px;
+  height: 16px;
+  display: block;
+  filter: brightness(0) invert(1);
+  opacity: 0.92;
+  transition: opacity 0.15s ease;
+}
+
+.eyc-resource-preview-close:hover .eyc-resource-preview-close-icon {
+  opacity: 1;
+}
+
+.eyc-resource-preview-meta {
+  padding: 10px 14px;
+  color: #aeb7c6;
+  font-size: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 6px 12px;
+  border-bottom: 1px solid #343a42;
+}
+
+.eyc-resource-preview-path {
+  grid-column: 1 / -1;
+  white-space: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.eyc-resource-preview-body {
+  padding: 14px;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 260px;
+}
+
+.eyc-resource-preview-image {
+  max-width: 100%;
+  max-height: 58vh;
+  object-fit: contain;
+  border: 1px solid #3e4551;
+  border-radius: 6px;
+  background: #161a20;
+}
+
+.eyc-resource-preview-video {
+  width: min(800px, 100%);
+  max-height: 58vh;
+  border: 1px solid #3e4551;
+  border-radius: 6px;
+  background: #101317;
+}
+
+.eyc-resource-preview-audio {
+  width: min(680px, 100%);
+}
+
+.eyc-resource-preview-empty {
+  color: #9ca7b8;
+  font-size: 13px;
+}
+
+.eyc-resource-preview-footer {
+  border-top: 1px solid #343a42;
+  padding: 10px 14px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.eyc-resource-preview-replace {
+  border: 1px solid #4f5f79;
+  background: #2c3b55;
+  color: #dbe6ff;
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.eyc-resource-preview-replace:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 /* 问题定位高亮闪烁 */

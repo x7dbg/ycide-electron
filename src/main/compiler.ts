@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSy
 import { execFile, ChildProcess } from 'child_process'
 import { app, BrowserWindow } from 'electron'
 import { libraryManager } from './library-manager'
-import type { LibCommand, LibConstant } from './fne-parser'
+import type { LibCommand, LibConstant, LibWindowUnit } from './fne-parser'
 
 // 编译消息类型
 export interface CompileMessage {
@@ -102,6 +102,8 @@ interface LibraryEventBindingSpec {
 interface LibraryCompileProtocol {
   version?: string | number
   eventBindings?: LibraryEventBindingSpec[]
+  commandBindings?: LibraryCommandBindingSpec[]
+  controlBindings?: LibraryControlBindingSpec[]
 }
 
 interface NormalizedEventBinding {
@@ -112,6 +114,44 @@ interface NormalizedEventBinding {
   channel: EventChannel
   code: string
 }
+
+interface LibraryCommandBindingSpec {
+  library?: string
+  command: string
+  commandEnglishName?: string
+  emit: string
+}
+
+interface NormalizedCommandBinding {
+  library: string
+  command: string
+  commandEnglishName: string
+  emit: string
+}
+
+interface LibraryControlBindingSpec {
+  library?: string
+  unit: string
+  unitEnglishName?: string
+  className?: string
+  style?: string
+}
+
+interface NormalizedControlBinding {
+  library: string
+  unit: string
+  unitEnglishName: string
+  className: string
+  style: string
+}
+
+interface LoadedCompileProtocols {
+  events: NormalizedEventBinding[]
+  commands: NormalizedCommandBinding[]
+  controls: NormalizedControlBinding[]
+}
+
+let compileProtocolCache: LoadedCompileProtocols | null = null
 
 // 正在运行的进程
 let runningProcess: ChildProcess | null = null
@@ -437,8 +477,66 @@ function parseEventBindingsFromProtocol(content: string, libName: string): Norma
   return result
 }
 
-function loadEventBindingProtocols(): NormalizedEventBinding[] {
-  const bindings: NormalizedEventBinding[] = []
+function parseCommandBindingsFromProtocol(content: string, libName: string): NormalizedCommandBinding[] {
+  let json: LibraryCompileProtocol
+  try {
+    json = JSON.parse(content) as LibraryCompileProtocol
+  } catch {
+    return []
+  }
+
+  if (!json || !Array.isArray(json.commandBindings)) return []
+
+  const result: NormalizedCommandBinding[] = []
+  for (const item of json.commandBindings) {
+    if (!item || typeof item !== 'object') continue
+    const command = normalizeKey(item.command || '')
+    const commandEnglishName = normalizeKey(item.commandEnglishName || '')
+    const emit = (item.emit || '').trim()
+    if ((!command && !commandEnglishName) || !emit) continue
+    result.push({
+      library: normalizeKey(item.library || libName),
+      command,
+      commandEnglishName,
+      emit,
+    })
+  }
+  return result
+}
+
+function parseControlBindingsFromProtocol(content: string, libName: string): NormalizedControlBinding[] {
+  let json: LibraryCompileProtocol
+  try {
+    json = JSON.parse(content) as LibraryCompileProtocol
+  } catch {
+    return []
+  }
+
+  if (!json || !Array.isArray(json.controlBindings)) return []
+
+  const result: NormalizedControlBinding[] = []
+  for (const item of json.controlBindings) {
+    if (!item || typeof item !== 'object') continue
+    const unit = normalizeKey(item.unit || '')
+    const className = (item.className || '').trim()
+    if (!unit || !className) continue
+    result.push({
+      library: normalizeKey(item.library || libName),
+      unit,
+      unitEnglishName: normalizeKey(item.unitEnglishName || ''),
+      className,
+      style: (item.style || '').trim(),
+    })
+  }
+  return result
+}
+
+function loadCompileProtocols(): LoadedCompileProtocols {
+  if (compileProtocolCache) return compileProtocolCache
+
+  const events: NormalizedEventBinding[] = []
+  const commands: NormalizedCommandBinding[] = []
+  const controls: NormalizedControlBinding[] = []
   const libs = libraryManager.getList().filter(l => l.loaded)
 
   for (const lib of libs) {
@@ -453,19 +551,27 @@ function loadEventBindingProtocols(): NormalizedEventBinding[] {
       if (!existsSync(p)) continue
       try {
         const content = readFileSync(p, 'utf-8')
-        const parsed = parseEventBindingsFromProtocol(content, lib.name)
-        if (parsed.length > 0) {
-          bindings.push(...parsed)
-          sendMessage({ type: 'info', text: `已加载支持库事件协议: ${basename(p)} (${parsed.length} 条)` })
+        const parsedEvents = parseEventBindingsFromProtocol(content, lib.name)
+        const parsedCommands = parseCommandBindingsFromProtocol(content, lib.name)
+        const parsedControls = parseControlBindingsFromProtocol(content, lib.name)
+        if (parsedEvents.length > 0 || parsedCommands.length > 0 || parsedControls.length > 0) {
+          events.push(...parsedEvents)
+          commands.push(...parsedCommands)
+          controls.push(...parsedControls)
+          sendMessage({
+            type: 'info',
+            text: `已加载支持库编译协议: ${basename(p)} (事件 ${parsedEvents.length} / 命令 ${parsedCommands.length} / 控件 ${parsedControls.length})`
+          })
         }
       } catch {
-        sendMessage({ type: 'warning', text: `警告: 读取支持库事件协议失败: ${p}` })
+        sendMessage({ type: 'warning', text: `警告: 读取支持库编译协议失败: ${p}` })
       }
       break
     }
   }
 
-  return bindings
+  compileProtocolCache = { events, commands, controls }
+  return compileProtocolCache
 }
 
 function resolveEventByProtocol(
@@ -490,6 +596,73 @@ function resolveEventByProtocol(
     return { channel: b.channel, code: b.code }
   }
   return null
+}
+
+function applyEmitTemplate(template: string, args: string[]): string {
+  const cArgs = args.map(a => formatArgForC(a))
+  return template
+    .replace(/\{args\}/g, cArgs.join(', '))
+    .replace(/\{(\d+)\}/g, (_m, idxText) => {
+      const idx = parseInt(idxText, 10)
+      return Number.isInteger(idx) && idx >= 0 && idx < cArgs.length ? cArgs[idx] : '0'
+    })
+}
+
+function resolveCommandByProtocol(
+  bindings: NormalizedCommandBinding[],
+  libraryFileName: string,
+  commandName: string,
+  commandEnglishName: string,
+  args: string[],
+): string | null {
+  if (bindings.length === 0) return null
+
+  const lib = normalizeKey(libraryFileName)
+  const cmd = normalizeKey(commandName)
+  const cmdEn = normalizeKey(commandEnglishName)
+  if (!cmd && !cmdEn) return null
+
+  for (const b of bindings) {
+    if (b.library && b.library !== lib) continue
+    const matched = (!!b.command && b.command === cmd) || (!!b.commandEnglishName && b.commandEnglishName === cmdEn)
+    if (!matched) continue
+    return applyEmitTemplate(b.emit, args)
+  }
+  return null
+}
+
+function resolveControlByProtocol(
+  bindings: NormalizedControlBinding[],
+  libraryFileName: string,
+  unitName: string,
+  unitEnglishName: string,
+): { className: string; style: string } | null {
+  if (bindings.length === 0) return null
+
+  const lib = normalizeKey(libraryFileName)
+  const unit = normalizeKey(unitName)
+  const unitEn = normalizeKey(unitEnglishName)
+
+  for (const b of bindings) {
+    if (b.library && b.library !== lib) continue
+    const unitMatch = b.unit === unit || (!!b.unitEnglishName && b.unitEnglishName === unitEn)
+    if (!unitMatch) continue
+    return { className: b.className, style: b.style }
+  }
+  return null
+}
+
+function resolveControlClassName(ctrlType: string, unit: LibWindowUnit | undefined, libraryFileName: string, protocolBindings: NormalizedControlBinding[]): string {
+  const byProtocol = resolveControlByProtocol(protocolBindings, libraryFileName, unit?.name || ctrlType, unit?.englishName || '')
+  if (byProtocol?.className) return byProtocol.className
+  if (unit?.englishName) return unit.englishName
+  return getWin32ClassName(ctrlType)
+}
+
+function resolveControlStyle(ctrlType: string, unit: LibWindowUnit | undefined, libraryFileName: string, protocolBindings: NormalizedControlBinding[]): string {
+  const byProtocol = resolveControlByProtocol(protocolBindings, libraryFileName, unit?.name || ctrlType, unit?.englishName || '')
+  if (byProtocol?.style) return byProtocol.style
+  return getWin32Style(ctrlType)
 }
 
 // 解析窗口文件
@@ -619,11 +792,12 @@ function collectProjectConstants(project: ProjectInfo, editorFiles?: Map<string,
   return result
 }
 
-function collectLibraryConstants(): LibraryConstantDef[] {
+function collectLibraryConstants(usedLibraryNames?: Set<string>): LibraryConstantDef[] {
   const result: LibraryConstantDef[] = []
   const seen = new Set<string>()
 
   for (const lib of libraryManager.getLoadedLibraryFiles()) {
+    if (usedLibraryNames && !usedLibraryNames.has(lib.name)) continue
     const info = libraryManager.getLibInfo(lib.name)
     const constants = (info?.constants || []) as LibConstant[]
     for (const c of constants) {
@@ -639,6 +813,82 @@ function collectLibraryConstants(): LibraryConstantDef[] {
   }
 
   return result
+}
+
+function collectUsedLibraryFileNames(project: ProjectInfo, editorFiles?: Map<string, string>): Set<string> {
+  const used = new Set<string>()
+  const commandMap = buildCommandMap()
+
+  // 1) 分析源代码中的命令调用，映射到支持库
+  for (const f of project.files) {
+    if (f.type !== 'EYC' && f.type !== 'EGV' && f.type !== 'ECS' && f.type !== 'EDT' && f.type !== 'ELL') continue
+    const sourcePath = join(project.projectDir, f.fileName)
+    const editorContent = editorFiles?.get(f.fileName)
+    const content = editorContent || (existsSync(sourcePath) ? readFileSync(sourcePath, 'utf-8') : '')
+    if (!content) continue
+
+    const lines = content.split('\n')
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/[\u200B\u200C\u200D\u2060]/g, '').trim()
+      if (!line || line.startsWith("'")) continue
+
+      if (
+        line.startsWith('.版本') ||
+        line.startsWith('.程序集') ||
+        line.startsWith('.参数 ') ||
+        line.startsWith('.全局变量 ') ||
+        line.startsWith('.局部变量 ') ||
+        line.startsWith('.常量 ') ||
+        line.startsWith('.数据类型 ') ||
+        line.startsWith('.成员 ') ||
+        line.startsWith('.支持库 ')
+      ) {
+        continue
+      }
+
+      const callableLine = line.startsWith('.') ? line.substring(1).trim() : line
+      if (!callableLine) continue
+      const cmdName = extractCommandName(callableLine)
+      if (!cmdName) continue
+      const resolved = commandMap.get(cmdName)
+      if (resolved?.libraryFileName) used.add(resolved.libraryFileName)
+    }
+  }
+
+  // 2) 分析窗口文件中的控件类型，映射到支持库
+  const allUnits = libraryManager.getAllWindowUnits()
+  const loadedLibs = libraryManager.getList().filter(l => l.loaded)
+  const libNameToFileName = new Map<string, string>()
+  for (const lib of loadedLibs) {
+    libNameToFileName.set(normalizeKey(lib.libName || ''), lib.name)
+    libNameToFileName.set(normalizeKey(lib.name), lib.name)
+  }
+
+  for (const f of project.files) {
+    if (f.type !== 'EFW' && !f.fileName.toLowerCase().endsWith('.efw')) continue
+    const efwPath = join(project.projectDir, f.fileName)
+    const editorContent = editorFiles?.get(f.fileName)
+    const winInfo = editorContent ? (() => {
+      try {
+        const data = JSON.parse(editorContent)
+        const controls = Array.isArray(data.controls) ? data.controls : []
+        return controls.map((c: any) => ({ type: c?.type || '' }))
+      } catch {
+        return []
+      }
+    })() : parseWindowFile(efwPath).controls
+
+    for (const ctrl of winInfo) {
+      const ctrlType = typeof ctrl.type === 'string' ? ctrl.type : ''
+      if (!ctrlType) continue
+      const unit = allUnits.find(u => u.name === ctrlType || u.englishName === ctrlType)
+      if (!unit) continue
+      const libFile = libNameToFileName.get(normalizeKey(unit.libraryName))
+      if (libFile) used.add(libFile)
+    }
+  }
+
+  return used
 }
 
 function escapeCString(text: string): string {
@@ -660,8 +910,8 @@ function toCLibraryConstantValue(c: LibraryConstantDef): string {
 
 // 从已加载的支持库构建命令查找表
 // 命令名 → 支持库命令信息（来源完全由 .fne 决定，不硬编码归属）
-function buildCommandMap(): Map<string, LibCommand & { libraryName: string }> {
-  const map = new Map<string, LibCommand & { libraryName: string }>()
+function buildCommandMap(): Map<string, LibCommand & { libraryName: string; libraryFileName: string }> {
+  const map = new Map<string, LibCommand & { libraryName: string; libraryFileName: string }>()
   const allCommands = libraryManager.getAllCommands()
 
   for (const cmd of allCommands) {
@@ -842,7 +1092,19 @@ const COMMAND_CODE_GENERATORS: Record<string, CommandCodeGenerator> = {
 }
 
 // 为支持库命令生成C代码
-function generateCCodeForCommand(cmd: LibCommand & { libraryName: string }, args: string[]): string {
+function generateCCodeForCommand(cmd: LibCommand & { libraryName: string; libraryFileName: string }, args: string[]): string {
+  const protocols = loadCompileProtocols()
+  const protocolCode = resolveCommandByProtocol(
+    protocols.commands,
+    cmd.libraryFileName,
+    cmd.name,
+    cmd.englishName,
+    args,
+  )
+  if (protocolCode) {
+    return protocolCode
+  }
+
   // 查找已注册的代码生成器
   const generator = COMMAND_CODE_GENERATORS[cmd.name]
   if (generator) {
@@ -852,7 +1114,7 @@ function generateCCodeForCommand(cmd: LibCommand & { libraryName: string }, args
   // 没有已注册的生成器：暂时生成注释占位，后续接入支持库的实际调用机制
   const funcName = cmd.englishName || cmd.name
   const cArgs = args.map(a => formatArgForC(a)).join(', ')
-  return `/* TODO: ${cmd.libraryName}.${cmd.name}(${funcName}) 尚未实现C代码生成 */ (void)0;`
+  return `/* TODO: ${cmd.libraryName}.${cmd.name}(${funcName}) 尚未实现C代码生成，请在 ${cmd.libraryFileName}.events/protocol.json 中添加 commandBindings */ (void)0;`
 }
 
 // .eyc 转 C 代码转译器
@@ -1096,7 +1358,13 @@ function transpileEycContent(eycContent: string, fileName: string, projectGlobal
 }
 
 // 生成 main.cpp 入口文件
-function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<string, string>, linkMode: string = 'normal'): string[] {
+function generateMainC(
+  project: ProjectInfo,
+  tempDir: string,
+  editorFiles?: Map<string, string>,
+  linkMode: string = 'normal',
+  linkedLibraries?: Array<{ name: string; fnePath: string; libName: string }>,
+): string[] {
   const mainCPath = join(tempDir, 'main.cpp')
   const additionalCFiles: string[] = []
 
@@ -1107,7 +1375,9 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
   const isWindowsApp = project.outputType === 'WindowsApp'
   const projectGlobals = collectProjectGlobalVars(project, editorFiles)
   const projectConstants = collectProjectConstants(project, editorFiles)
-  const libraryConstants = collectLibraryConstants()
+  const librariesForBuild = linkedLibraries || libraryManager.getLoadedLibraryFiles()
+  const usedLibraryNames = new Set(librariesForBuild.map(l => l.name))
+  const libraryConstants = collectLibraryConstants(usedLibraryNames)
 
   if (isWindowsApp) {
     // 查找启动窗口文件
@@ -1162,7 +1432,7 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
     // 在全局区生成窗口组件库初始化函数的 extern "C" 声明（仅静态编译模式，跳过系统核心库）
     {
       const arch = project.platform === 'x86' ? 'x86' : 'x64'
-      for (const lib of libraryManager.getLoadedLibraryFiles()) {
+      for (const lib of librariesForBuild) {
         if (libraryManager.isCore(lib.name)) continue
         const info = libraryManager.getLibInfo(lib.name)
         if (!info || !info.windowUnits || info.windowUnits.length === 0) continue
@@ -1203,6 +1473,17 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
       sendMessage({ type: 'info', text: `已生成: ${cFileName}` })
     }
 
+    const allUnits = libraryManager.getAllWindowUnits()
+    const compileProtocols = loadCompileProtocols()
+    const protocolBindings = compileProtocols.events
+    const controlProtocolBindings = compileProtocols.controls
+    const loadedLibs = librariesForBuild
+    const libNameToFileName = new Map<string, string>()
+    for (const lib of loadedLibs) {
+      libNameToFileName.set(normalizeKey(lib.libName || ''), lib.name)
+      libNameToFileName.set(normalizeKey(lib.name), lib.name)
+    }
+
     // 创建控件函数
     mainCode += '/* 创建所有控件 */\n'
     mainCode += 'void CreateControls(HWND hWndParent) {\n'
@@ -1211,8 +1492,10 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
 
     let ctrlId = 1001
     for (const ctrl of winInfo.controls) {
-      const className = getWin32ClassName(ctrl.type)
-      const baseStyle = getWin32Style(ctrl.type)
+      const unitInfo = allUnits.find(u => u.name === ctrl.type || u.englishName === ctrl.type)
+      const libraryFileName = unitInfo ? (libNameToFileName.get(normalizeKey(unitInfo.libraryName)) || '') : ''
+      const className = resolveControlClassName(ctrl.type, unitInfo, libraryFileName, controlProtocolBindings)
+      const baseStyle = resolveControlStyle(ctrl.type, unitInfo, libraryFileName, controlProtocolBindings)
       const visFlag = ctrl.visible ? ' | WS_VISIBLE' : ''
       const disFlag = ctrl.disabled ? ' | WS_DISABLED' : ''
       const style = `${baseStyle}${visFlag}${disFlag}`
@@ -1225,7 +1508,6 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
       // 通用窗口组件属性：通过标准 WCM_SETPROP 协议 (WM_APP+1) 设置
       // wParam = 属性在 FNE 元数据中的声明索引，lParam = 属性值
       // 任何按此协议实现 WndProc 的第三方组件库均自动支持
-      const unitInfo = libraryManager.getAllWindowUnits().find(u => u.name === ctrl.type || u.englishName === ctrl.type)
       if (unitInfo && Object.keys(ctrl.extraProps).length > 0) {
         for (let pi = 0; pi < unitInfo.properties.length; pi++) {
           const prop = unitInfo.properties[pi]
@@ -1252,21 +1534,13 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
     const commandEventBindings: CommandEventBinding[] = []
     const notifyEventBindings: NotifyEventBinding[] = []
     const scrollEventBindings: ScrollEventBinding[] = []
-    const allUnits = libraryManager.getAllWindowUnits()
-    const protocolBindings = loadEventBindingProtocols()
     const unresolvedEvents = new Set<string>()
-    const loadedLibs = libraryManager.getList().filter(l => l.loaded)
-    const libNameToFileName = new Map<string, string>()
-    for (const lib of loadedLibs) {
-      libNameToFileName.set(normalizeKey(lib.libName || ''), lib.name)
-      libNameToFileName.set(normalizeKey(lib.name), lib.name)
-    }
 
     for (const ctrl of winInfo.controls) {
-      const className = getWin32ClassName(ctrl.type)
       const unit = allUnits.find(u => u.name === ctrl.type || u.englishName === ctrl.type)
-      const events = unit?.events || []
       const libraryFileName = unit ? (libNameToFileName.get(normalizeKey(unit.libraryName)) || '') : ''
+      const className = resolveControlClassName(ctrl.type, unit, libraryFileName, controlProtocolBindings)
+      const events = unit?.events || []
       for (const ev of events) {
         const handlerName = `_${ctrl.name.replace(/^_+/, '')}_${ev.name}`
         const proto = resolveEventByProtocol(
@@ -1321,14 +1595,16 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
 
     // 兼容历史按钮事件命名
     const isClickable = (t: string) => ['Button', '按钮', 'ycUI按钮'].includes(t)
+    const declaredHandlers = new Set<string>()
     for (const ctrl of winInfo.controls) {
       if (isClickable(ctrl.type)) {
         mainCode += `WEAK_FUNC void ${ctrl.name}_被单击(void) { }\n`
-        mainCode += `WEAK_FUNC void _${ctrl.name.replace(/^_+/, '')}_被单击(void) { ${ctrl.name}_被单击(); }\n`
+        const compatHandlerName = `_${ctrl.name.replace(/^_+/, '')}_被单击`
+        mainCode += `WEAK_FUNC void ${compatHandlerName}(void) { ${ctrl.name}_被单击(); }\n`
+        declaredHandlers.add(compatHandlerName)
       }
     }
 
-    const declaredHandlers = new Set<string>()
     for (const b of commandEventBindings) {
       if (declaredHandlers.has(b.handlerName)) continue
       declaredHandlers.add(b.handlerName)
@@ -1497,7 +1773,7 @@ function generateMainC(project: ProjectInfo, tempDir: string, editorFiles?: Map<
     // 初始化有窗口组件的支持库（跳过系统核心库）
     {
       const arch = project.platform === 'x86' ? 'x86' : 'x64'
-      for (const lib of libraryManager.getLoadedLibraryFiles()) {
+      for (const lib of librariesForBuild) {
         if (libraryManager.isCore(lib.name)) continue
         const info = libraryManager.getLibInfo(lib.name)
         if (!info || !info.windowUnits || info.windowUnits.length === 0) continue
@@ -1660,6 +1936,7 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
   }
 
   const startTime = Date.now()
+  compileProtocolCache = null
 
   try {
     // 查找 .epp 文件
@@ -1710,11 +1987,13 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
     // ========== 支持库链接 ==========
     const linkMode = options.linkMode || 'normal'
     const loadedLibs = libraryManager.getLoadedLibraryFiles()
+    const usedLibraryNames = collectUsedLibraryFileNames(project, editorFiles)
+    const libsToLink = loadedLibs.filter(l => usedLibraryNames.has(l.name))
     sendMessage({ type: 'info', text: `编译模式: ${linkMode === 'static' ? '静态编译' : '普通编译'}` })
 
     // 生成C++代码
     sendMessage({ type: 'info', text: '正在生成C++代码...' })
-    const additionalCFiles = generateMainC(project, tempDir, editorFiles, linkMode)
+    const additionalCFiles = generateMainC(project, tempDir, editorFiles, linkMode, libsToLink)
     const outputName = project.projectName
     const outputExe = join(outputDir, outputName + '.exe')
     const mainC = join(tempDir, 'main.cpp')
@@ -1743,13 +2022,13 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
 
     // ========== 支持库链接 ==========
     if (loadedLibs.length > 0) {
-      sendMessage({ type: 'info', text: `已加载 ${loadedLibs.length} 个支持库，正在处理链接依赖...` })
+      sendMessage({ type: 'info', text: `已加载 ${loadedLibs.length} 个支持库，实际使用 ${libsToLink.length} 个，正在处理链接依赖...` })
     }
 
     let linkFailed = false
     const fnesToCopy: Array<{ name: string; fnePath: string; libName: string }> = []
 
-    for (const lib of loadedLibs) {
+    for (const lib of libsToLink) {
       const staticLib = libraryManager.findStaticLib(lib.name, arch)
 
       // 窗口组件静态库需要额外链接的系统库

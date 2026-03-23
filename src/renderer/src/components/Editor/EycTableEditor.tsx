@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useRef, useMemo, forwardRef, useImperativeHandle } from 'react'
 import { matchScore, isEnglishMatch } from '../../utils/pinyin'
 import { eycToYiFormat, sanitizePastedTextForCurrent, normalizeEycText } from './eycFormat'
+import type { LibWindowUnit } from './VisualDesigner'
+import closeIcon from '../../assets/icons/Close.svg'
 import './EycTableEditor.css'
 
 // ========== 数据结构 ==========
@@ -8,7 +10,7 @@ import './EycTableEditor.css'
 type DeclType =
   | 'assembly' | 'assemblyVar' | 'sub' | 'subParam' | 'localVar'
   | 'globalVar' | 'constant' | 'dataType' | 'dataTypeMember'
-  | 'dll' | 'image' | 'sound'
+    | 'dll' | 'image' | 'sound' | 'resource'
 
 interface ParsedLine {
   type: DeclType | 'version' | 'supportLib' | 'blank' | 'comment' | 'code'
@@ -90,6 +92,17 @@ function unquote(s: string): string {
   return s
 }
 
+function inferResourceTypeByFileName(fileName: string): string {
+  const ext = ((fileName || '').split('.').pop() || '').toLowerCase()
+  const imageExt = new Set(['png', 'jpg', 'jpeg', 'bmp', 'gif', 'webp', 'svg', 'ico', 'tif', 'tiff'])
+  const audioExt = new Set(['wav', 'mp3', 'ogg', 'wma', 'aac', 'flac', 'm4a', 'mid', 'midi'])
+  const videoExt = new Set(['mp4', 'avi', 'mov', 'wmv', 'mkv', 'webm', 'flv', 'm4v', 'mpeg', 'mpg'])
+  if (imageExt.has(ext)) return '图片'
+  if (audioExt.has(ext)) return '声音'
+  if (videoExt.has(ext)) return '视频'
+  return '其它'
+}
+
 function parseLines(text: string): ParsedLine[] {
   return text.split('\n').map(line => {
     const t = line.replace(/[\r\t]/g, '').trim()
@@ -103,6 +116,7 @@ function parseLines(text: string): ParsedLine[] {
       ['assembly', '.程序集 '], ['assemblyVar', '.程序集变量 '],
       ['sub', '.子程序 '], ['localVar', '.局部变量 '],
       ['globalVar', '.全局变量 '], ['constant', '.常量 '],
+      ['resource', '.资源 '],
       ['dataType', '.数据类型 '], ['dll', '.DLL命令 '],
       ['image', '.图片 '], ['sound', '.声音 '],
     ]
@@ -128,7 +142,7 @@ function parseLines(text: string): ParsedLine[] {
 
 // ========== 构建渲染块 ==========
 
-function buildBlocks(text: string, isClassModule = false): RenderBlock[] {
+function buildBlocks(text: string, isClassModule = false, isResourceTable = false): RenderBlock[] {
   const lines = parseLines(text)
   const blocks: RenderBlock[] = []
   let tbl: RenderBlock | null = null
@@ -351,18 +365,35 @@ function buildBlocks(text: string, isClassModule = false): RenderBlock[] {
       he = 6; continue
     }
 
-    // 常量
-    if (ln.type === 'constant') {
+    // 常量 / 资源
+    if (ln.type === 'constant' || ln.type === 'resource') {
       if (he !== 9) {
         flush()
-        newTbl('constant', ['常量名称', '常量值', '公 开', '备 注'], i)
+        if (isResourceTable) {
+          newTbl('constant', ['资源名称', '资源内容', '资源类型', '公开', '备注'], i)
+        } else {
+          newTbl('constant', ['常量名称', '常量值', '公 开', '备 注'], i)
+        }
       }
-      pushRow(i, [
-        { text: f[0] || '', cls: 'eOthercolor', fieldIdx: 0 },
-        { text: f.length > 1 ? unquote(f[1]) : '\u00A0', cls: 'Constanttext', fieldIdx: 1 },
-        { text: f[2] === '公开' ? '√' : '\u00A0', cls: 'eTickcolor', align: 'center' },
-        { text: f.length > 3 ? f.slice(3).join(', ') : '', cls: 'Remarkscolor', fieldIdx: 3, sliceField: true },
-      ])
+      if (isResourceTable) {
+        const fileName = f.length > 1 ? unquote(f[1]) : ''
+        const inferredType = inferResourceTypeByFileName(fileName)
+        const legacyPublicAt2 = f[2] === '公开'
+        pushRow(i, [
+          { text: f[0] || '', cls: 'eOthercolor', fieldIdx: 0 },
+          { text: f.length > 1 ? unquote(f[1]) : '\u00A0', cls: 'Constanttext', fieldIdx: 1 },
+          { text: legacyPublicAt2 ? inferredType : (f[2] || inferredType || '\u00A0'), cls: 'eTypecolor', fieldIdx: 2 },
+          { text: (legacyPublicAt2 || f[3] === '公开') ? '√' : '\u00A0', cls: 'eTickcolor', align: 'center' },
+          { text: legacyPublicAt2 ? (f.length > 3 ? f.slice(3).join(', ') : '') : (f.length > 4 ? f.slice(4).join(', ') : ''), cls: 'Remarkscolor', fieldIdx: 4, sliceField: true },
+        ])
+      } else {
+        pushRow(i, [
+          { text: f[0] || '', cls: 'eOthercolor', fieldIdx: 0 },
+          { text: f.length > 1 ? unquote(f[1]) : '\u00A0', cls: 'Constanttext', fieldIdx: 1 },
+          { text: f[2] === '公开' ? '√' : '\u00A0', cls: 'eTickcolor', align: 'center' },
+          { text: f.length > 3 ? f.slice(3).join(', ') : '', cls: 'Remarkscolor', fieldIdx: 3, sliceField: true },
+        ])
+      }
       he = 9; continue
     }
 
@@ -994,6 +1025,18 @@ const FLOW_KW = new Set([
   '计次循环首', '计次循环尾', '变量循环首', '变量循环尾', '如果结束',
 ])
 
+const MEMBER_DELIMITER_REGEX = /[。．]/g
+const MEMBER_DELIMITERS = new Set(['.', '。', '．'])
+
+const WINDOW_METHOD_WHITELIST = new Set([
+  '取窗口句柄', '销毁', '获取焦点', '可有焦点',
+  '取用户区宽度', '取用户区高度', '禁止重画', '允许重画',
+  '重画', '部分重画', '取消重画', '刷新显示',
+  '移动', '调整层次', '弹出菜单', '发送信息',
+  '投递信息', '取标记组件', '置外形图片', '激活',
+  '置托盘图标', '弹出托盘菜单', '置父窗口',
+])
+
 const NUMERIC_TYPE_COMMON_NOTE = '字节型、短整数型、整数型、长整数型、小数型、双精度小数型统称为数值型，彼此可转换；编程时需注意溢出与精度丢失（例如 257 转字节型后为 1）。'
 
 const BUILTIN_TYPE_ITEMS: Array<{ name: string; englishName: string; description: string }> = [
@@ -1156,7 +1199,7 @@ function isValidVariableLikeName(name: string): boolean {
 
 const DECL_PREFIXES = [
   '.程序集变量 ', '.程序集 ', '.子程序 ', '.局部变量 ',
-  '.全局变量 ', '.常量 ', '.数据类型 ', '.DLL命令 ',
+  '.全局变量 ', '.常量 ', '.资源 ', '.数据类型 ', '.DLL命令 ',
   '.图片 ', '.声音 ', '.参数 ', '.成员 ',
 ]
 
@@ -1200,8 +1243,13 @@ export interface EycTableEditorHandle {
 
 interface EycTableEditorProps {
   value: string
+  docLanguage?: string
+  projectDir?: string
   isClassModule?: boolean
   projectGlobalVars?: Array<{ name: string; type: string }>
+  windowControlNames?: string[]
+  windowControlTypes?: Array<{ name: string; type: string }>
+  windowUnits?: LibWindowUnit[]
   projectConstants?: Array<{ name: string; value: string }>
   projectDllCommands?: Array<{ name: string; returnType: string; description: string; params: CompletionParam[] }>
   projectDataTypes?: Array<{ name: string }>
@@ -1282,7 +1330,7 @@ function getOuterParenRange(text: string): { start: number; end: number } | null
   return null
 }
 
-const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(function EycTableEditor({ value, isClassModule = false, projectGlobalVars = [], projectConstants = [], projectDllCommands = [], projectDataTypes = [], projectClassNames = [], onClassNameRename, onChange, onCommandClick, onCommandClear, onProblemsChange, onCursorChange }, ref) {
+const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(function EycTableEditor({ value, docLanguage = '', projectDir, isClassModule = false, projectGlobalVars = [], windowControlNames = [], windowControlTypes = [], windowUnits = [], projectConstants = [], projectDllCommands = [], projectDataTypes = [], projectClassNames = [], onClassNameRename, onChange, onCommandClick, onCommandClear, onProblemsChange, onCursorChange }, ref) {
   const [editCell, setEditCell] = useState<EditState | null>(null)
   const [editVal, setEditVal] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -1293,10 +1341,53 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
   const flowMarkRef = useRef<string>('')
   const flowIndentRef = useRef<string>('')
   const userVarNamesRef = useRef<Set<string>>(new Set())
+  const userSubNamesRef = useRef<Set<string>>(new Set())
   const wasFlowStartRef = useRef(false) // 编辑行是否为流程起始行（用于防止流程命令缩进翻倍）
   const commitGuardRef = useRef(false) // 防止 commit 被重复调用（mousedown + blur-on-unmount）
   const editCellOrigValRef = useRef<string>('') // 表格单元格编辑前的原始值（liveUpdate 会实时更新 lines，需保存原始值用于重命名比较）
   const [expandedLines, setExpandedLines] = useState<Set<number>>(new Set())
+  const isResourceTableDoc = docLanguage === 'erc'
+  const [resourcePreview, setResourcePreview] = useState<{
+    visible: boolean
+    lineIndex: number
+    resourceName: string
+    resourceFile: string
+    resourceType: string
+    version: number
+  }>({ visible: false, lineIndex: -1, resourceName: '', resourceFile: '', resourceType: '', version: 0 })
+  const [resourcePreviewBusy, setResourcePreviewBusy] = useState(false)
+  const [resourcePreviewSrc, setResourcePreviewSrc] = useState('')
+  const [resourcePreviewMsg, setResourcePreviewMsg] = useState('')
+  const [resourcePreviewMeta, setResourcePreviewMeta] = useState<{ mime: string; ext: string; filePath: string; sizeBytes: number; modifiedAtMs: number } | null>(null)
+  const [resourcePreviewMediaMeta, setResourcePreviewMediaMeta] = useState<{ width?: number; height?: number; durationSec?: number }>({})
+
+  const formatFileSize = useCallback((bytes: number): string => {
+    if (!Number.isFinite(bytes) || bytes < 0) return '未知'
+    if (bytes < 1024) return `${bytes} B`
+    const units = ['KB', 'MB', 'GB', 'TB']
+    let value = bytes / 1024
+    let idx = 0
+    while (value >= 1024 && idx < units.length - 1) {
+      value /= 1024
+      idx += 1
+    }
+    return `${value.toFixed(value < 10 ? 2 : 1)} ${units[idx]}`
+  }, [])
+
+  const formatDateTime = useCallback((tsMs: number): string => {
+    if (!Number.isFinite(tsMs) || tsMs <= 0) return '未知'
+    return new Date(tsMs).toLocaleString('zh-CN', { hour12: false })
+  }, [])
+
+  const formatDuration = useCallback((seconds: number): string => {
+    if (!Number.isFinite(seconds) || seconds < 0) return '未知'
+    const total = Math.floor(seconds)
+    const h = Math.floor(total / 3600)
+    const m = Math.floor((total % 3600) / 60)
+    const s = total % 60
+    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    return `${m}:${String(s).padStart(2, '0')}`
+  }, [])
 
   // ===== 行选择状态 =====
   const [selectedLines, setSelectedLines] = useState<Set<number>>(new Set())
@@ -1434,6 +1525,20 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       return { protectedLine, deletable, sorted: Array.from(deletable).sort((a, b) => a - b) }
     }
 
+    const getInsertAtForPastedSubs = (ls: string[], cursorLine: number): number => {
+      if (cursorLine < 0 || cursorLine >= ls.length) return ls.length
+      const parsed = parseLines(ls.join('\n'))
+      let ownerSubLine = -1
+      for (let i = Math.min(cursorLine, parsed.length - 1); i >= 0; i--) {
+        if (parsed[i].type === 'sub') { ownerSubLine = i; break }
+      }
+      if (ownerSubLine < 0) return ls.length
+      for (let i = ownerSubLine + 1; i < parsed.length; i++) {
+        if (parsed[i].type === 'sub') return i
+      }
+      return ls.length
+    }
+
     const handler = (e: KeyboardEvent): void => {
       // 正在编辑输入框时不处理（交给 onKey）
       const tag = (document.activeElement as HTMLElement)?.tagName
@@ -1485,31 +1590,26 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
           if (!clipText) return
           const sanitized = sanitizePastedTextForCurrent(clipText, currentText)
           const pastedLines = sanitized.split('\n').map(l => l.replace(/\r$/, ''))
+          if (pastedLines.length === 0) return
+          const pastedHasSub = parseLines(pastedLines.join('\n')).some(ln => ln.type === 'sub')
           const ls = currentText.split('\n')
+          const cursorLine = editCellRef.current?.lineIndex ?? lastFocusedLine.current
           pushUndo(currentText)
-          if (selectedLines.size > 0) {
-            // 有选中行：在第一个选中行位置替换选中行
-            const { protectedLine, deletable, sorted } = getDeletableSelection(ls, selectedLines)
-            const insertAt = sorted.length > 0
-              ? sorted[0]
-              : (protectedLine >= 0 ? Math.min(protectedLine + 1, ls.length) : ls.length)
-            const nl = ls.filter((_, i) => !deletable.has(i))
-            nl.splice(insertAt, 0, ...pastedLines)
-            const nt = nl.join('\n')
-            setCurrentText(nt); prevRef.current = nt; onChange(nt)
-            // 选中粘贴后的行
-            const newSel = new Set<number>()
-            for (let i = 0; i < pastedLines.length; i++) newSel.add(insertAt + i)
-            setSelectedLines(newSel)
-          } else {
-            // 无选中行：追加到末尾
-            const nl = [...ls, ...pastedLines]
-            const nt = nl.join('\n')
-            setCurrentText(nt); prevRef.current = nt; onChange(nt)
-            const newSel = new Set<number>()
-            for (let i = 0; i < pastedLines.length; i++) newSel.add(ls.length + i)
-            setSelectedLines(newSel)
+          // 统一采用“向下插入”：不覆盖现有内容，连续粘贴会继续往下追加
+          let insertAt = ls.length
+          if (pastedHasSub) {
+            insertAt = getInsertAtForPastedSubs(ls, cursorLine)
+          } else if (cursorLine >= 0) {
+            insertAt = Math.min(cursorLine + 1, ls.length)
           }
+          const nl = [...ls]
+          nl.splice(insertAt, 0, ...pastedLines)
+          const nt = nl.join('\n')
+          setCurrentText(nt); prevRef.current = nt; onChange(nt)
+          const newSel = new Set<number>()
+          for (let i = 0; i < pastedLines.length; i++) newSel.add(insertAt + i)
+          setSelectedLines(newSel)
+          lastFocusedLine.current = insertAt + pastedLines.length - 1
         })
         return
       }
@@ -1615,6 +1715,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
   const acItemsRef = useRef<AcDisplayItem[]>([])
   acItemsRef.current = acItems
   const userVarCompletionItemsRef = useRef<CompletionItem[]>([])
+  const userSubCompletionItemsRef = useRef<CompletionItem[]>([])
   const constantCompletionItemsRef = useRef<CompletionItem[]>([])
   const libraryConstantCompletionItemsRef = useRef<CompletionItem[]>([])
   const dllCompletionItemsRef = useRef<CompletionItem[]>([])
@@ -1641,6 +1742,17 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     const raw = (srcLines[lineIndex] || '').replace(/[\r\t]/g, '').trimStart()
     return raw.startsWith('.程序集 ')
   }, [currentText])
+
+  const windowControlTypeMap = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const item of windowControlTypes) {
+      const name = (item?.name || '').trim()
+      const type = (item?.type || '').trim()
+      if (!name || !type) continue
+      map.set(name, type)
+    }
+    return map
+  }, [windowControlTypes])
 
   // 加载所有命令（用于补全），含流程关键字
   const reloadCommands = useCallback(() => {
@@ -1785,13 +1897,14 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       hashMode = true
     }
 
-    if (!isTypeCellEdit && !isClassNameCellEdit && !hashMode && word.length === 0) { setAcVisible(false); return }
+    const isMemberAccess = wordStart > 0 && MEMBER_DELIMITERS.has(val[wordStart - 1])
+    if (!isTypeCellEdit && !isClassNameCellEdit && !hashMode && word.length === 0 && !isMemberAccess) { setAcVisible(false); return }
 
     acWordStartRef.current = wordStart
     acPrefixRef.current = hashMode ? '#' : ''
 
     // 检查是否在"组件名."后面 → 显示成员命令
-    let sourceList: CompletionItem[] = [...userVarCompletionItemsRef.current, ...dllCompletionItemsRef.current, ...allCommandsRef.current]
+    let sourceList: CompletionItem[] = [...userVarCompletionItemsRef.current, ...userSubCompletionItemsRef.current, ...dllCompletionItemsRef.current, ...allCommandsRef.current]
     if (isClassNameCellEdit) {
       sourceList = [...classNameCompletionItemsRef.current]
     } else if (isTypeCellEdit) {
@@ -1805,20 +1918,84 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
         seen.add(key)
         return true
       })
-    } else if (wordStart > 0 && val[wordStart - 1] === '.') {
+    } else if (isMemberAccess) {
       // 提取点号前的组件名
       let objEnd = wordStart - 1
       let objStart = objEnd
       while (objStart > 0 && /[\u4e00-\u9fa5A-Za-z0-9_]/.test(val[objStart - 1])) objStart--
       const objName = val.slice(objStart, objEnd)
       if (objName.length > 0) {
-        // 过滤出属于该数据类型的成员命令
-        const memberCmds = memberCommandsRef.current.filter(c => c.ownerTypeName === objName)
-        if (memberCmds.length > 0) {
-          sourceList = memberCmds
+        const normalizeTypeName = (s: string): string => {
+          const t = (s || '').trim()
+          if (!t) return ''
+          const parts = t.split(/[.:]/).map(p => p.trim()).filter(Boolean)
+          const base = (parts.length > 0 ? parts[parts.length - 1] : t).toLowerCase()
+          return base.replace(/(类型|类|组件|控件)$/u, '')
         }
+
+        const mappedType = windowControlTypeMap.get(objName)
+        const inferredType = objName.replace(/[0-9]+$/, '')
+        const typeName = normalizeTypeName(mappedType || inferredType || objName)
+
+        const toMemberItem = (name: string, englishName: string, description: string, category: string, returnType: string, ownerTypeName: string, libraryName: string, params: CompletionParam[] = []): CompletionItem => ({
+          name,
+          englishName,
+          description,
+          returnType,
+          category,
+          libraryName,
+          isMember: true,
+          ownerTypeName,
+          params,
+        })
+
+        // 1) 来自窗口组件定义的属性（最可靠，最相关）
+        const unitMembers: CompletionItem[] = []
+        for (const unit of windowUnits) {
+          const unitName = normalizeTypeName(unit.name)
+          const unitEn = normalizeTypeName(unit.englishName || '')
+          if (typeName && unitName !== typeName && unitEn !== typeName) continue
+
+          for (const p of unit.properties || []) {
+            const propName = (p.name || '').trim()
+            if (!propName) continue
+            unitMembers.push(toMemberItem(
+              propName,
+              (p.englishName || '').trim(),
+              (p.description || '').trim(),
+              '属性',
+              (p.typeName || '').trim(),
+              unit.name,
+              unit.libraryName || '支持库'
+            ))
+          }
+        }
+
+        // 2) 来自成员命令的同类型方法/成员（排除事件）
+        const commandMembers = memberCommandsRef.current.filter(c => {
+          const owner = normalizeTypeName(c.ownerTypeName)
+          if (!owner || !typeName) return false
+          if (owner !== typeName) return false
+          return !(c.category || '').includes('事件')
+        })
+
+        // 3) 将窗口通用方法并入所有控件成员补全（仅保留命令源中真实存在的方法）
+        const windowMethods = [...memberCommandsRef.current, ...allCommandsRef.current]
+          .filter(c => WINDOW_METHOD_WHITELIST.has((c.name || '').trim()))
+          .filter(c => !((c.category || '').includes('事件')))
+
+        const merged = [...unitMembers, ...commandMembers, ...windowMethods]
+        const seen = new Set<string>()
+        sourceList = merged.filter(item => {
+          const key = `${item.category}:${item.name}`
+          if (seen.has(key)) return false
+          seen.add(key)
+          return true
+        })
       }
     }
+
+    const allowEmptyWord = isMemberAccess && !isTypeCellEdit && !isClassNameCellEdit && !hashMode && word.length === 0
 
     // 过滤并排序
     const fullMatches: AcDisplayItem[] = sourceList
@@ -1836,7 +2013,9 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
           ? (word.length === 0
             ? (cmd.name.length > 0 ? 1 : 0)
             : (cmd.name.includes(word) ? (1000 - cmd.name.length) : 0))
-          : matchScore(word, cmd.name, cmd.englishName)
+          : (allowEmptyWord
+            ? (cmd.name.length > 0 ? 1 : 0)
+            : matchScore(word, cmd.name, cmd.englishName))
       }))
       .filter(m => m.score > 0)
       .sort((a, b) => b.score - a.score || a.cmd.name.length - b.cmd.name.length)
@@ -1890,7 +2069,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     setAcItems(matches)
     setAcIndex(0)
     setAcVisible(true)
-  }, [editCell, canUseTypeCompletion, canUseClassNameCompletion])
+  }, [editCell, canUseTypeCompletion, canUseClassNameCompletion, windowControlTypeMap])
 
   /** 应用补全项：替换当前输入词为命令名 */
   const applyCompletion = useCallback((displayItem: AcDisplayItem) => {
@@ -1938,14 +2117,45 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     const indent = val.length - trimmed.length
     const prefix = val.slice(0, indent)
 
+    const allCmdPool = [
+      ...allCommandsRef.current,
+      ...dllCompletionItemsRef.current,
+      ...memberCommandsRef.current,
+    ]
+
+    const resolveCmdToken = (token: string): { normalizedToken: string; lookupName: string; command: CompletionItem | null } => {
+      const normalizedToken = token.replace(MEMBER_DELIMITER_REGEX, '.')
+      const dotIndex = normalizedToken.lastIndexOf('.')
+      if (dotIndex >= 0) {
+        const objPrefix = normalizedToken.slice(0, dotIndex + 1)
+        const memberName = normalizedToken.slice(dotIndex + 1)
+        const cmd = allCmdPool.find(c => c.name === memberName) || null
+        if (cmd && cmd.englishName && cmd.englishName.trim()) {
+          const english = cmd.englishName.trim()
+          return { normalizedToken: objPrefix + english, lookupName: english, command: cmd }
+        }
+        return { normalizedToken, lookupName: memberName, command: cmd }
+      }
+
+      const cmd = allCmdPool.find(c => c.name === normalizedToken) || null
+      if (cmd && cmd.englishName && cmd.englishName.trim() && !FLOW_KW.has(normalizedToken)) {
+        const english = cmd.englishName.trim()
+        return { normalizedToken: english, lookupName: english, command: cmd }
+      }
+      return { normalizedToken, lookupName: normalizedToken, command: cmd }
+    }
+
     // 提取命令名（支持“命令名”或“命令名 (...)”两种输入）
-    const cmdName = trimmed.split(/[\s(（]/)[0]
+    const rawCmdToken = trimmed.split(/[\s(（]/)[0]
+    const resolved = resolveCmdToken(rawCmdToken)
+    const cmdName = resolved.normalizedToken
+    const lookupCmdName = resolved.lookupName
     if (!/^[\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_.]*$/.test(cmdName)) return [val]
 
     // 流程控制命令自动补齐后续行
     const autoLines = FLOW_AUTO_COMPLETE[cmdName]
     if (autoLines) {
-      const cmd = allCommandsRef.current.find(c => c.name === cmdName) || dllCompletionItemsRef.current.find(c => c.name === cmdName)
+      const cmd = resolved.command || allCmdPool.find(c => c.name === lookupCmdName)
       // 命令本身和内部代码行都缩进4空格（两个汉字宽度）给流程线留空间
       const innerPrefix = prefix + '    '
       let mainLine: string
@@ -1980,8 +2190,13 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     if (!m) return [val]
 
     if (trimmed.startsWith('.')) return [val]
-    const cmd = allCommandsRef.current.find(c => c.name === cmdName) || dllCompletionItemsRef.current.find(c => c.name === cmdName)
-    if (!cmd) return [val]
+    const cmd = resolved.command || allCmdPool.find(c => c.name === lookupCmdName)
+    if (!cmd) {
+      if (userSubNamesRef.current.has(cmdName)) {
+        return [prefix + cmdName + ' ()']
+      }
+      return [val]
+    }
 
     if (cmd.params.length === 0) {
       return [prefix + cmdName + ' ()']
@@ -2005,6 +2220,14 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     return ''
   }, [parsedLines])
 
+  const findOwnerAssemblyName = useCallback((lineIndex: number): string => {
+    for (let i = lineIndex; i >= 0; i--) {
+      const ln = parsedLines[i]
+      if (ln?.type === 'assembly') return (ln.fields[0] || '').trim()
+    }
+    return ''
+  }, [parsedLines])
+
   const handleTableCellHint = useCallback((lineIndex: number, fieldIdx: number, cellText: string): void => {
     if (!onCommandClick || fieldIdx < 0) return
     const ln = parsedLines[lineIndex]
@@ -2022,12 +2245,18 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       const paramType = (ln.fields[1] || '').trim()
       const ownerSub = findOwnerSubName(lineIndex)
       onCommandClick(`__PARAM__:${paramName}:${paramType}:${ownerSub}`)
+      return
     }
-  }, [findOwnerSubName, onCommandClick, parsedLines])
+
+    if (fieldIdx === 0 && ln.type === 'sub') {
+      const ownerAssembly = findOwnerAssemblyName(lineIndex)
+      onCommandClick(`__SUBDECL__:${val}:${ownerAssembly}`)
+    }
+  }, [findOwnerAssemblyName, findOwnerSubName, onCommandClick, parsedLines])
 
   const blocks = useMemo<RenderBlock[]>(() => {
     try {
-      return buildBlocks(currentText, isClassModule)
+      return buildBlocks(currentText, isClassModule, isResourceTableDoc)
     } catch (error) {
       console.error('[EycTableEditor] buildBlocks failed, fallback to line blocks', error)
       return currentText.split('\n').map((line, idx): RenderBlock => ({
@@ -2038,7 +2267,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
         isVirtual: false,
       }))
     }
-  }, [currentText])
+  }, [currentText, isClassModule, isResourceTableDoc])
   const flowLines = useMemo(() => {
     try {
       return computeFlowLines(blocks)
@@ -2093,12 +2322,15 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     return { userSubNames: subs, userVarNames: vars }
   }, [currentText])
   const projectGlobalVarNameSet = useMemo(() => new Set(projectGlobalVars.map(v => v.name).filter(Boolean)), [projectGlobalVars])
+  const windowControlNameSet = useMemo(() => new Set(windowControlNames.map(n => (n || '').trim()).filter(Boolean)), [windowControlNames])
   const allKnownVarNames = useMemo(() => {
     const set = new Set<string>(userVarNames)
     for (const n of projectGlobalVarNameSet) set.add(n)
+    for (const n of windowControlNameSet) set.add(n)
     return set
-  }, [userVarNames, projectGlobalVarNameSet])
+  }, [userVarNames, projectGlobalVarNameSet, windowControlNameSet])
   useEffect(() => { userVarNamesRef.current = allKnownVarNames }, [allKnownVarNames])
+  useEffect(() => { userSubNamesRef.current = userSubNames }, [userSubNames])
 
   // 生成用于补全的用户变量项（局部/参数按当前子程序作用域）
   const userVarCompletionItems = useMemo<CompletionItem[]>(() => {
@@ -2169,11 +2401,39 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       addVar(v.name, v.type || '', '全局变量')
     }
 
+    // 当前窗口设计器中的控件实例名（如 按钮1）
+    for (const controlName of windowControlNames) {
+      addVar(controlName, '', '窗口组件')
+    }
+
     return items
-  }, [currentText, editCell?.lineIndex, projectGlobalVars])
+  }, [currentText, editCell?.lineIndex, projectGlobalVars, windowControlNames])
   useEffect(() => {
     userVarCompletionItemsRef.current = userVarCompletionItems
   }, [userVarCompletionItems])
+
+  const userSubCompletionItems = useMemo<CompletionItem[]>(() => {
+    const items: CompletionItem[] = []
+    for (const subName of userSubNames) {
+      const name = (subName || '').trim()
+      if (!name) continue
+      items.push({
+        name,
+        englishName: '',
+        description: '用户子程序',
+        returnType: '',
+        category: '子程序',
+        libraryName: '用户定义',
+        isMember: false,
+        ownerTypeName: '',
+        params: [],
+      })
+    }
+    return items
+  }, [userSubNames])
+  useEffect(() => {
+    userSubCompletionItemsRef.current = userSubCompletionItems
+  }, [userSubCompletionItems])
 
   const constantCompletionItems = useMemo<CompletionItem[]>(() => {
     const parsed = parseLines(currentText)
@@ -2682,7 +2942,17 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     }
     // 表格单元格编辑：重建字段
     const rawLine = lines[editCell.lineIndex]
-    const newLine = rebuildLineField(rawLine, editCell.fieldIdx, effectiveVal, editCell.sliceField)
+    let fieldValue = effectiveVal
+    const parsedRaw = parseLines(rawLine)[0]
+    if (isResourceTableDoc && editCell.fieldIdx === 1 && parsedRaw && (parsedRaw.type === 'resource' || parsedRaw.type === 'constant')) {
+      const trimmed = effectiveVal.trim()
+      if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith('\u201c') && trimmed.endsWith('\u201d'))) {
+        fieldValue = trimmed
+      } else {
+        fieldValue = `"${trimmed.replace(/"/g, '\\"')}"`
+      }
+    }
+    const newLine = rebuildLineField(rawLine, editCell.fieldIdx, fieldValue, editCell.sliceField)
     const nl = [...lines]; nl[editCell.lineIndex] = newLine
 
     // 变量名重命名同步：fieldIdx === 0 且为变量声明行时，替换代码中的引用
@@ -2750,7 +3020,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
 
     const nt = nl.join('\n')
     setCurrentText(nt); prevRef.current = nt; onChange(nt); setEditCell(null)
-  }, [editCell, editVal, isClassModule, lines, onChange, onClassNameRename])
+  }, [editCell, editVal, isClassModule, isResourceTableDoc, lines, onChange, onClassNameRename])
 
   // 每次渲染后重置 commitGuard，允许下一次合法的 commit 调用
   useEffect(() => { commitGuardRef.current = false })
@@ -2810,6 +3080,133 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     }, 0)
   }, [pushUndo, canUseTypeCompletion, updateCompletion])
 
+  const attachResourceFileToLine = useCallback(async (lineIndex: number): Promise<string | null> => {
+    if (!isResourceTableDoc || !projectDir) return null
+    const ln = parsedLines[lineIndex]
+    if (!ln || (ln.type !== 'resource' && ln.type !== 'constant')) return null
+
+    try {
+      const result = await window.api.project.importResourceFile(projectDir)
+      if (!result.success) {
+        if (!result.canceled) {
+          window.alert('添加资源文件失败：' + result.message)
+        }
+        return null
+      }
+
+      const fileName = result.fileName
+      const rawLine = lines[lineIndex] || ''
+      const safeName = `"${fileName.replace(/"/g, '\\"')}"`
+      const withFile = rebuildLineField(rawLine, 1, safeName, false)
+      const withType = rebuildLineField(withFile, 2, inferResourceTypeByFileName(fileName), false)
+
+      pushUndo(currentText)
+      const nl = [...lines]
+      nl[lineIndex] = withType
+      const nt = nl.join('\n')
+      setCurrentText(nt)
+      prevRef.current = nt
+      onChange(nt)
+
+      return fileName
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      window.alert('添加资源文件失败：' + msg)
+      return null
+    }
+  }, [isResourceTableDoc, projectDir, parsedLines, lines, pushUndo, currentText, onChange])
+
+  const openResourcePreview = useCallback(async (lineIndex: number) => {
+    if (!isResourceTableDoc) return
+    const ln = parsedLines[lineIndex]
+    if (!ln || (ln.type !== 'resource' && ln.type !== 'constant')) return
+    const resourceName = (ln.fields[0] || '').trim()
+    let resourceFile = unquote((ln.fields[1] || '').trim())
+    if (!resourceFile) {
+      const imported = await attachResourceFileToLine(lineIndex)
+      if (!imported) return
+      // 空内容单元格双击仅用于快速绑定文件，不自动弹预览窗口。
+      return
+    }
+    const resourceType = (ln.fields[2] || '').trim() || inferResourceTypeByFileName(resourceFile)
+    setResourcePreview({
+      visible: true,
+      lineIndex,
+      resourceName,
+      resourceFile,
+      resourceType,
+      version: Date.now(),
+    })
+  }, [isResourceTableDoc, parsedLines, attachResourceFileToLine])
+
+  const handleReplaceResourceFile = useCallback(async () => {
+    if (!resourcePreview.visible || !projectDir || !resourcePreview.resourceFile || resourcePreviewBusy) return
+    setResourcePreviewBusy(true)
+    try {
+      const result = await window.api.project.replaceResourceFile(projectDir, resourcePreview.resourceFile)
+      if (result.success) {
+        setResourcePreview(prev => ({ ...prev, version: Date.now() }))
+      } else if (!result.canceled) {
+        window.alert('更换资源文件失败：' + result.message)
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      window.alert('更换资源文件失败：' + msg)
+    } finally {
+      setResourcePreviewBusy(false)
+    }
+  }, [projectDir, resourcePreview.visible, resourcePreview.resourceFile, resourcePreviewBusy])
+
+  useEffect(() => {
+    if (!resourcePreview.visible || !projectDir || !resourcePreview.resourceFile) {
+      setResourcePreviewSrc('')
+      setResourcePreviewMsg('')
+      setResourcePreviewMeta(null)
+      setResourcePreviewMediaMeta({})
+      return
+    }
+
+    const viewType = resourcePreview.resourceType || inferResourceTypeByFileName(resourcePreview.resourceFile)
+    const shouldLoad = viewType === '图片' || viewType === '声音' || viewType === '视频'
+
+    let canceled = false
+    setResourcePreviewMsg(shouldLoad ? '正在加载预览...' : '当前资源类型暂不支持内嵌预览，可使用“更换文件”来替换资源。')
+    setResourcePreviewSrc('')
+    setResourcePreviewMediaMeta({})
+    ;(async () => {
+      try {
+        const result = await window.api.project.getResourcePreviewData(projectDir, resourcePreview.resourceFile, shouldLoad)
+        if (canceled) return
+        if (!result.success) {
+          setResourcePreviewMeta(null)
+          setResourcePreviewMsg('预览加载失败：' + result.message)
+          return
+        }
+        setResourcePreviewMeta({
+          mime: result.mime,
+          ext: result.ext,
+          filePath: result.filePath,
+          sizeBytes: result.sizeBytes,
+          modifiedAtMs: result.modifiedAtMs,
+        })
+
+        if (shouldLoad && result.base64) {
+          setResourcePreviewSrc(`data:${result.mime};base64,${result.base64}`)
+          setResourcePreviewMsg('')
+        } else {
+          setResourcePreviewSrc('')
+        }
+      } catch (error) {
+        if (canceled) return
+        setResourcePreviewMeta(null)
+        const msg = error instanceof Error ? error.message : String(error)
+        setResourcePreviewMsg('预览加载失败：' + msg)
+      }
+    })()
+
+    return () => { canceled = true }
+  }, [projectDir, resourcePreview.visible, resourcePreview.resourceFile, resourcePreview.resourceType, resourcePreview.version])
+
   const startEditLine = useCallback((li: number, clientX?: number, containerLeft?: number, isVirtual?: boolean) => {
     // 使用 prevRef 获取最新行数据，防止 commit 修改文本后 React 尚未重渲染导致闭包中 lines 过时
     const latestText = prevRef.current
@@ -2826,7 +3223,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     let flowIndent = ''
     if (!flowMark && !isVirtual) {
       // 若 commit 刚修改了文本但尚未重渲染，flowLines 可能过时，需重新计算
-      const currentFlowLines = (latestText === currentText) ? flowLines : computeFlowLines(buildBlocks(latestText, isClassModule))
+      const currentFlowLines = (latestText === currentText) ? flowLines : computeFlowLines(buildBlocks(latestText, isClassModule, isResourceTableDoc))
       const segs = currentFlowLines.map.get(li) || []
       if (segs.length > 0) {
         const lineMaxDepth = Math.max(...segs.map(s => s.depth)) + 1
@@ -2856,7 +3253,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       if (clientX !== undefined && containerLeft !== undefined) {
         let relX = clientX - containerLeft // 相对于代码行内容区域
         // 减去流程线段占用的宽度，使光标定位到输入框内正确位置
-        const currentFlowLines2 = (latestText === currentText) ? flowLines : computeFlowLines(buildBlocks(latestText, isClassModule))
+        const currentFlowLines2 = (latestText === currentText) ? flowLines : computeFlowLines(buildBlocks(latestText, isClassModule, isResourceTableDoc))
         const segs2 = currentFlowLines2.map.get(li) || []
         if (segs2.length > 0) {
           const lineMaxDepth2 = Math.max(...segs2.map(s => s.depth)) + 1
@@ -2955,6 +3352,48 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       setAcVisible(false)
       setEditCell(null)
       wrapperRef.current?.focus()
+      return
+    }
+    if (ctrl && e.key === 'v') {
+      e.preventDefault()
+      setAcVisible(false)
+      navigator.clipboard.readText().then(clipText => {
+        if (!clipText) return
+        const sanitized = sanitizePastedTextForCurrent(clipText, currentText)
+        const pastedLines = sanitized.split('\n').map(l => l.replace(/\r$/, ''))
+        if (pastedLines.length === 0) return
+        const pastedHasSub = parseLines(pastedLines.join('\n')).some(ln => ln.type === 'sub')
+        const ls = currentText.split('\n')
+        const cursorLine = editCell?.lineIndex ?? lastFocusedLine.current
+        const getInsertAtForPastedSubs = (line: number): number => {
+          if (line < 0 || line >= ls.length) return ls.length
+          const parsed = parseLines(ls.join('\n'))
+          let ownerSubLine = -1
+          for (let i = Math.min(line, parsed.length - 1); i >= 0; i--) {
+            if (parsed[i].type === 'sub') { ownerSubLine = i; break }
+          }
+          if (ownerSubLine < 0) return ls.length
+          for (let i = ownerSubLine + 1; i < parsed.length; i++) {
+            if (parsed[i].type === 'sub') return i
+          }
+          return ls.length
+        }
+        let insertAt = ls.length
+        if (pastedHasSub) {
+          insertAt = getInsertAtForPastedSubs(cursorLine)
+        } else if (cursorLine >= 0) {
+          insertAt = Math.min(cursorLine + 1, ls.length)
+        }
+        pushUndo(currentText)
+        const nl = [...ls]
+        nl.splice(insertAt, 0, ...pastedLines)
+        const nt = nl.join('\n')
+        setCurrentText(nt); prevRef.current = nt; onChange(nt)
+        const newSel = new Set<number>()
+        for (let i = 0; i < pastedLines.length; i++) newSel.add(insertAt + i)
+        setSelectedLines(newSel)
+        lastFocusedLine.current = insertAt + pastedLines.length - 1
+      })
       return
     }
 
@@ -3652,19 +4091,22 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
 
     insertConstant: () => {
       const curLines = currentText.split('\n')
+      const constPrefix = isResourceTableDoc ? '.资源 ' : '.常量 '
+      const defaultType = '其它'
 
       // 生成不重复的常量名
       const existingNames = new Set<string>()
       for (const ln of curLines) {
         const t = ln.replace(/[\r\t]/g, '').trim()
-        if (t.startsWith('.常量 ')) {
-          const name = splitCSV(t.slice('.常量 '.length))[0]
+        if (t.startsWith('.常量 ') || t.startsWith('.资源 ')) {
+          const raw = t.startsWith('.资源 ') ? t.slice('.资源 '.length) : t.slice('.常量 '.length)
+          const name = splitCSV(raw)[0]
           if (name) existingNames.add(name)
         }
       }
       let num = 1
-      while (existingNames.has('常量' + num)) num++
-      const newName = '常量' + num
+      while (existingNames.has((isResourceTableDoc ? '资源' : '常量') + num)) num++
+      const newName = (isResourceTableDoc ? '资源' : '常量') + num
 
       // 默认插入到首个子程序前；若已有常量/全局变量则追加到其后
       let firstSub = curLines.findIndex(ln => ln.replace(/[\r\t]/g, '').trim().startsWith('.子程序 '))
@@ -3675,7 +4117,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       let lastGlobal = -1
       for (let i = 0; i < firstSub; i++) {
         const t = curLines[i].replace(/[\r\t]/g, '').trim()
-        if (t.startsWith('.常量 ')) lastConstant = i
+        if (t.startsWith('.常量 ') || t.startsWith('.资源 ')) lastConstant = i
         if (t.startsWith('.全局变量 ')) lastGlobal = i
       }
       if (lastConstant >= 0) insertAt = lastConstant + 1
@@ -3683,7 +4125,11 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
 
       pushUndo(currentText)
       const nl = [...curLines]
-      nl.splice(insertAt, 0, '.常量 ' + newName + ', 0')
+      if (isResourceTableDoc) {
+        nl.splice(insertAt, 0, constPrefix + newName + ', "", ' + defaultType)
+      } else {
+        nl.splice(insertAt, 0, constPrefix + newName + ', 0')
+      }
       const nt = nl.join('\n')
       setCurrentText(nt); prevRef.current = nt; onChange(nt)
 
@@ -3769,7 +4215,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
         return
       }
     },
-  }), [currentText, onChange, pushUndo, selectedLines, getSelectedSourceText])
+  }), [currentText, onChange, pushUndo, selectedLines, getSelectedSourceText, isResourceTableDoc])
 
   // 查找代码行中第一个有参数的有效命令
   const findCmdWithParams = useCallback((codeLine: string): CompletionItem | null => {
@@ -4050,43 +4496,38 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
           if (!clipText) return
           e.preventDefault()
           const pastedLines = sanitizePastedTextForCurrent(clipText, currentText).split('\n').map(l => l.replace(/\r$/, ''))
+          if (pastedLines.length === 0) return
+          const pastedHasSub = parseLines(pastedLines.join('\n')).some(ln => ln.type === 'sub')
           const ls = currentText.split('\n')
-          const protectedLine = (() => {
+          const getInsertAtForPastedSubs = (cursorLine: number): number => {
+            if (cursorLine < 0 || cursorLine >= ls.length) return ls.length
             const parsed = parseLines(ls.join('\n'))
-            for (let i = 0; i < parsed.length; i++) {
-              const tp = parsed[i].type
-              if (tp !== 'blank' && tp !== 'comment' && tp !== 'code' && tp !== 'version' && tp !== 'supportLib') return i
+            let ownerSubLine = -1
+            for (let i = Math.min(cursorLine, parsed.length - 1); i >= 0; i--) {
+              if (parsed[i].type === 'sub') { ownerSubLine = i; break }
             }
-            return -1
-          })()
-          pushUndo(currentText)
-          if (selectedLines.size > 0) {
-            const sorted = [...selectedLines].sort((a, b) => a - b)
-            const deletable = new Set<number>()
-            for (const i of selectedLines) {
-              if (i < 0 || i >= ls.length) continue
-              if (i === protectedLine) continue
-              deletable.add(i)
+            if (ownerSubLine < 0) return ls.length
+            for (let i = ownerSubLine + 1; i < parsed.length; i++) {
+              if (parsed[i].type === 'sub') return i
             }
-            const sortedDeletable = [...deletable].sort((a, b) => a - b)
-            const insertAt = sortedDeletable.length > 0
-              ? sortedDeletable[0]
-              : (protectedLine >= 0 ? Math.min(protectedLine + 1, ls.length) : ls.length)
-            const nl = ls.filter((_, i) => !deletable.has(i))
-            nl.splice(insertAt, 0, ...pastedLines)
-            const nt = nl.join('\n')
-            setCurrentText(nt); prevRef.current = nt; onChange(nt)
-            const newSel = new Set<number>()
-            for (let i = 0; i < pastedLines.length; i++) newSel.add(insertAt + i)
-            setSelectedLines(newSel)
-          } else {
-            const nl = [...ls, ...pastedLines]
-            const nt = nl.join('\n')
-            setCurrentText(nt); prevRef.current = nt; onChange(nt)
-            const newSel = new Set<number>()
-            for (let i = 0; i < pastedLines.length; i++) newSel.add(ls.length + i)
-            setSelectedLines(newSel)
+            return ls.length
           }
+          pushUndo(currentText)
+          const cursorLine = editCellRef.current?.lineIndex ?? lastFocusedLine.current
+          let insertAt = ls.length
+          if (pastedHasSub) {
+            insertAt = getInsertAtForPastedSubs(cursorLine)
+          } else if (cursorLine >= 0) {
+            insertAt = Math.min(cursorLine + 1, ls.length)
+          }
+          const nl = [...ls]
+          nl.splice(insertAt, 0, ...pastedLines)
+          const nt = nl.join('\n')
+          setCurrentText(nt); prevRef.current = nt; onChange(nt)
+          const newSel = new Set<number>()
+          for (let i = 0; i < pastedLines.length; i++) newSel.add(insertAt + i)
+          setSelectedLines(newSel)
+          lastFocusedLine.current = insertAt + pastedLines.length - 1
         }}
         tabIndex={0}
         style={{ outline: 'none' }}
@@ -4148,7 +4589,17 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                           onClick={(e) => {
                             e.stopPropagation()
                             if (row.isHeader) return
+                            if (isResourceTableDoc && blk.tableType === 'constant' && cell.fieldIdx === 1) return
                             handleTableCellHint(row.lineIndex, cell.fieldIdx ?? -1, cell.text)
+                            startEditCell(row.lineIndex, ci, cell.text, cell.fieldIdx, cell.sliceField)
+                          }}
+                          onDoubleClick={(e) => {
+                            e.stopPropagation()
+                            if (row.isHeader) return
+                            if (isResourceTableDoc && blk.tableType === 'constant' && cell.fieldIdx === 1) {
+                              void openResourcePreview(row.lineIndex)
+                              return
+                            }
                             startEditCell(row.lineIndex, ci, cell.text, cell.fieldIdx, cell.sliceField)
                           }}
                         >
@@ -4246,7 +4697,9 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                   const cmdName = findFirstCommandName(rawCode)
                   if (cmdName) {
                     e.stopPropagation()
-                    onCommandClick?.(cmdName)
+                    const ownerAssembly = findOwnerAssemblyName(blk.lineIndex)
+                    const hintName = userSubNamesRef.current.has(cmdName) ? `__SUB__:${cmdName}:${ownerAssembly}` : cmdName
+                    onCommandClick?.(hintName)
                   }
                   startEditLine(blk.lineIndex, e.clientX, e.currentTarget.getBoundingClientRect().left, blk.isVirtual)
                 }}
@@ -4305,6 +4758,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                           const isFunc = s.cls === 'funccolor'
                           const isObjMethod = s.cls === 'cometwolr'
                           const isFlowKw = s.cls === 'comecolor'
+                          const isUserSubRef = isFunc && userSubNamesRef.current.has(s.text)
                           const isAssignTarget = s.cls === 'assignTarget'
                           const isInvalid = (isFunc && !validCommandNames.has(s.text)) || (isAssignTarget && !allKnownVarNames.has(s.text))
                           const isLineSyntaxInvalid = lineHasMissingRhs && (isAssignTarget || (!isFunc && !isObjMethod && !isFlowKw && s.text.trim() !== ''))
@@ -4312,7 +4766,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                             return (
                               <span
                                 key={si}
-                                className={`${isAssignTarget ? 'Variablescolor' : s.cls}${(isInvalid || isLineSyntaxInvalid) ? ' eyc-cmd-invalid' : ''}`}
+                                className={`${isAssignTarget ? 'Variablescolor' : (isUserSubRef ? 'eyc-subrefcolor' : s.cls)}${(isInvalid || isLineSyntaxInvalid) ? ' eyc-cmd-invalid' : ''}`}
                               >{s.text}</span>
                             )
                           }
@@ -4347,7 +4801,11 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                           // 点击参数行时提示该参数的信息
                           const rawCode = (blk.codeLine || '').replace(FLOW_AUTO_TAG, '')
                           const cmdName = findFirstCommandName(rawCode)
-                          if (cmdName) onCommandClick?.(cmdName, pi)
+                          if (cmdName) {
+                            const ownerAssembly = findOwnerAssemblyName(blk.lineIndex)
+                            const hintName = userSubNamesRef.current.has(cmdName) ? `__SUB__:${cmdName}:${ownerAssembly}` : cmdName
+                            onCommandClick?.(hintName, pi)
+                          }
                           setEditCell({ lineIndex: blk.lineIndex, cellIndex: -2, fieldIdx: -1, sliceField: false, paramIdx: pi })
                           setEditVal(argVals[pi] !== undefined ? argVals[pi] : '')
                           setTimeout(() => paramInputRef.current?.focus(), 0)
@@ -4384,6 +4842,71 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
           )
         })}
       </div>
+
+      {resourcePreview.visible && (() => {
+        const viewType = resourcePreview.resourceType || inferResourceTypeByFileName(resourcePreview.resourceFile)
+        const isImage = viewType === '图片'
+        const isAudio = viewType === '声音'
+        const isVideo = viewType === '视频'
+        return (
+          <div className="eyc-resource-preview-overlay" onClick={() => setResourcePreview(prev => ({ ...prev, visible: false }))}>
+            <div className="eyc-resource-preview-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="eyc-resource-preview-header">
+                <div className="eyc-resource-preview-title">资源预览</div>
+                <button
+                  type="button"
+                  className="eyc-resource-preview-close"
+                  aria-label="关闭预览"
+                  title="关闭"
+                  onClick={() => setResourcePreview(prev => ({ ...prev, visible: false }))}
+                >
+                  <img className="eyc-resource-preview-close-icon" src={closeIcon} alt="" aria-hidden="true" />
+                </button>
+              </div>
+              <div className="eyc-resource-preview-meta">
+                <div>资源名称：{resourcePreview.resourceName || '（未命名）'}</div>
+                <div>资源类型：{viewType || '其它'}</div>
+                <div>文件扩展名：{resourcePreviewMeta?.ext ? `.${resourcePreviewMeta.ext}` : '未知'}</div>
+                <div>MIME：{resourcePreviewMeta?.mime || '未知'}</div>
+                <div>文件大小：{resourcePreviewMeta ? formatFileSize(resourcePreviewMeta.sizeBytes) : '加载中...'}</div>
+                <div>修改时间：{resourcePreviewMeta ? formatDateTime(resourcePreviewMeta.modifiedAtMs) : '加载中...'}</div>
+                {!!resourcePreviewMediaMeta.width && !!resourcePreviewMediaMeta.height && (
+                  <div>分辨率：{resourcePreviewMediaMeta.width} × {resourcePreviewMediaMeta.height}</div>
+                )}
+                {Number.isFinite(resourcePreviewMediaMeta.durationSec) && (
+                  <div>时长：{formatDuration(resourcePreviewMediaMeta.durationSec as number)}</div>
+                )}
+                <div className="eyc-resource-preview-path">资源路径：{resourcePreviewMeta?.filePath || (projectDir ? `${projectDir}\\${resourcePreview.resourceFile}` : resourcePreview.resourceFile)}</div>
+              </div>
+              <div className="eyc-resource-preview-body">
+                {!!resourcePreviewSrc && isImage && <img className="eyc-resource-preview-image" src={resourcePreviewSrc} alt={resourcePreview.resourceFile} onLoad={(e) => {
+                  const width = e.currentTarget.naturalWidth
+                  const height = e.currentTarget.naturalHeight
+                  setResourcePreviewMediaMeta(prev => ({ ...prev, width, height }))
+                }} />}
+                {!!resourcePreviewSrc && isAudio && <audio className="eyc-resource-preview-audio" src={resourcePreviewSrc} controls onLoadedMetadata={(e) => {
+                  const duration = e.currentTarget.duration
+                  const durationSec = Number.isFinite(duration) ? duration : undefined
+                  setResourcePreviewMediaMeta(prev => ({ ...prev, durationSec }))
+                }} />}
+                {!!resourcePreviewSrc && isVideo && <video className="eyc-resource-preview-video" src={resourcePreviewSrc} controls onLoadedMetadata={(e) => {
+                  const width = e.currentTarget.videoWidth
+                  const height = e.currentTarget.videoHeight
+                  const duration = e.currentTarget.duration
+                  const durationSec = Number.isFinite(duration) ? duration : undefined
+                  setResourcePreviewMediaMeta(prev => ({ ...prev, width, height, durationSec }))
+                }} />}
+                {!resourcePreviewSrc && <div className="eyc-resource-preview-empty">{resourcePreviewMsg || '当前资源类型暂不支持内嵌预览，可使用“更换文件”来替换资源。'}</div>}
+              </div>
+              <div className="eyc-resource-preview-footer">
+                <button className="eyc-resource-preview-replace" onClick={() => { void handleReplaceResourceFile() }} disabled={resourcePreviewBusy || !projectDir}>
+                  {resourcePreviewBusy ? '更换中...' : '更换文件'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* 自动补全弹窗 */}
       {acVisible && acItems.length > 0 && (

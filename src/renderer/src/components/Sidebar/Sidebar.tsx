@@ -71,7 +71,9 @@ function TreeItem({ node, depth = 0, onOpenFile, activeFileId }: { node: TreeNod
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
         onClick={() => hasChildren && setExpanded(!expanded)}
         onDoubleClick={() => {
-          if (!hasChildren && onOpenFile) {
+          if (node.type === 'module' && onOpenFile) {
+            onOpenFile(openFileId, openFileName, targetLine)
+          } else if (!hasChildren && onOpenFile) {
             onOpenFile(openFileId, openFileName, targetLine)
           }
         }}
@@ -79,7 +81,8 @@ function TreeItem({ node, depth = 0, onOpenFile, activeFileId }: { node: TreeNod
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
-            if (hasChildren) setExpanded(!expanded)
+            if (node.type === 'module' && onOpenFile) onOpenFile(openFileId, openFileName, targetLine)
+            else if (hasChildren) setExpanded(!expanded)
             else if (onOpenFile) onOpenFile(openFileId, openFileName, targetLine)
           }
         }}
@@ -724,18 +727,6 @@ function Sidebar({ width, onResize, selection, activeTab, onTabChange, onSelectC
     : activeTab === 'library' ? '支持库'
     : '属性'
 
-  // 默认事件映射
-  const defaultEventMap: Record<string, string> = {
-    '窗口': '创建完毕',
-    '按钮': '被单击',
-    '编辑框': '内容被改变',
-    '标签': '被单击',
-    '图片框': '被单击',
-    '选择框': '被单击',
-    '列表框': '被选择',
-    '组合框': '被选择'
-  }
-
   // 当前选中组件的事件列表
   const selectedEvents = useMemo<LibUnitEvent[]>(() => {
     if (!selection) return []
@@ -748,6 +739,11 @@ function Sidebar({ width, onResize, selection, activeTab, onTabChange, onSelectC
   const currentForm = selection ? (selection.kind === 'form' ? selection.form : selection.form) : null
   const EVENT_PREFIX_CHECKED = '✓\u00A0'
   const EVENT_PREFIX_EMPTY = '\u00A0\u00A0'
+  const currentFormKey = useMemo(() => {
+    if (!projectDir || !currentForm) return ''
+    const sourceFile = currentForm.sourceFile || `${currentForm.name}.eyc`
+    return `${projectDir}::${sourceFile}`
+  }, [projectDir, currentForm?.name, currentForm?.sourceFile])
 
   const getEventSubName = useCallback((sel: Exclude<SelectionTarget, null>, eventName: string): string => {
     if (sel.kind === 'form') {
@@ -759,44 +755,49 @@ function Sidebar({ width, onResize, selection, activeTab, onTabChange, onSelectC
 
   const [selectedEventIndex, setSelectedEventIndex] = useState('')
   const [existingEventSubs, setExistingEventSubs] = useState<Set<string>>(new Set())
+  const eventSubsCacheRef = useRef<Map<string, Set<string>>>(new Map())
 
   // 读取当前窗口对应 .eyc，解析已存在的 .子程序 名称
   useEffect(() => {
-    if (activeTab !== 'property' || !projectDir || !currentForm) {
-      setExistingEventSubs(new Set())
+    if (activeTab !== 'property' || !projectDir || !currentForm || !currentFormKey) {
       return
     }
+
+    const cached = eventSubsCacheRef.current.get(currentFormKey)
+    if (cached) {
+      setExistingEventSubs(new Set(cached))
+    }
+
     let cancelled = false
     ;(async () => {
       const sourceFile = currentForm.sourceFile || `${currentForm.name}.eyc`
       const filePath = projectDir + '\\' + sourceFile
       const content = await window.api?.project?.readFile(filePath)
       if (cancelled || !content) {
-        if (!cancelled) setExistingEventSubs(new Set())
         return
       }
       const next = new Set<string>()
-      const subRegex = /^\s*\.子程序\s+([^\s]+)/gm
-      let m: RegExpExecArray | null
-      while ((m = subRegex.exec(content)) !== null) {
-        if (m[1]) next.add(m[1])
+      const lines = content.split(/\r?\n/)
+      for (const line of lines) {
+        const match = /^\s*\.子程序\s+(.+?)(?:\s*,|\s*$)/.exec(line)
+        if (match?.[1]) {
+          next.add(match[1].trim())
+        }
       }
-      if (!cancelled) setExistingEventSubs(next)
+
+      if (!cancelled) {
+        const merged = new Set<string>([...(eventSubsCacheRef.current.get(currentFormKey) || []), ...next])
+        eventSubsCacheRef.current.set(currentFormKey, merged)
+        setExistingEventSubs(merged)
+      }
     })()
     return () => { cancelled = true }
-  }, [activeTab, projectDir, currentForm?.name, currentForm?.sourceFile])
+  }, [activeTab, projectDir, currentForm?.name, currentForm?.sourceFile, currentFormKey])
 
-  // 选中组件变化时，自动选择默认事件
+  // 选中变化时，重置为占位项（空值）
   useEffect(() => {
-    if (selectedEvents.length === 0) {
-      setSelectedEventIndex('')
-      return
-    }
-    const defaultName = defaultEventMap[selectedTypeName]
-    const defaultIdx = defaultName ? selectedEvents.findIndex(e => e.name === defaultName) : -1
-    const targetIdx = defaultIdx >= 0 ? defaultIdx : 0
-    setSelectedEventIndex(String(targetIdx))
-  }, [selectedEvents, selectedTypeName])
+    setSelectedEventIndex('')
+  }, [selection, selectedEvents.length, selectedTypeName])
 
   return (
     <aside className="sidebar" style={{ width: `${width}px` }} role="complementary" aria-label="项目导航">
@@ -826,6 +827,7 @@ function Sidebar({ width, onResize, selection, activeTab, onTabChange, onSelectC
             onChange={(e) => {
               const idx = parseInt(e.target.value, 10)
               setSelectedEventIndex(e.target.value)
+              if (e.target.value === '') return
               const ev = Number.isNaN(idx) ? undefined : selectedEvents[idx]
               if (selection && ev && onEventNavigate) {
                 onEventNavigate(selection, ev.name, ev.args ?? [])
@@ -833,20 +835,27 @@ function Sidebar({ width, onResize, selection, activeTab, onTabChange, onSelectC
                 setExistingEventSubs(prev => {
                   const next = new Set(prev)
                   next.add(subName)
+                  if (currentFormKey) {
+                    eventSubsCacheRef.current.set(currentFormKey, new Set(next))
+                  }
                   return next
                 })
               }
             }}
-            disabled={selectedEvents.length === 0}
+            disabled={!selection || selectedEvents.length === 0}
           >
-            {selectedEvents.length === 0
-              ? <option value="">(无事件)</option>
-              : selectedEvents.map((ev, idx) => (
+            {!selection || selectedEvents.length === 0 ? (
+              <option value="">无对应事件</option>
+            ) : (
+              <>
+                <option value="">在此处选择加入事件处理子程序</option>
+                {selectedEvents.map((ev, idx) => (
                   <option key={`${ev.name}-${idx}`} value={String(idx)} title={ev.description}>
                     {((selection && existingEventSubs.has(getEventSubName(selection, ev.name))) ? EVENT_PREFIX_CHECKED : EVENT_PREFIX_EMPTY) + ev.name}
                   </option>
-                ))
-            }
+                ))}
+              </>
+            )}
           </select>
         </div>
       )}

@@ -12,6 +12,11 @@ import RedoSvg from '../../assets/icons/Redo.svg?raw'
 import RunSvg from '../../assets/icons/Run.svg?raw'
 import LibrarySvg from '../../assets/icons/Library.svg?raw'
 import ToolboxSvg from '../../assets/icons/Toolbox.svg?raw'
+import CollapseLeftSvg from '../../assets/icons/CollapseLeft.svg?raw'
+import ExpandRightSvg from '../../assets/icons/ExpandRight.svg?raw'
+import SourceControlSvg from '../../assets/icons/SourceControl.svg?raw'
+import ExtensionSvg from '../../assets/icons/Extension.svg?raw'
+import UserSvg from '../../assets/icons/User.svg?raw'
 
 // Debug icons
 import StopSvg from '../../assets/icons/Stop.svg?raw'
@@ -93,6 +98,11 @@ export const ICON_MAP: Record<string, string> = {
   'run-to-cursor': GoToCurrentLineSvg,
   'library': LibrarySvg,
   'toolbox': ToolboxSvg,
+  'collapse-left': CollapseLeftSvg,
+  'expand-right': ExpandRightSvg,
+  'source-control': SourceControlSvg,
+  'extension': ExtensionSvg,
+  'account': UserSvg,
 
   // Alignment
   'align-left': AlignLeftSvg,

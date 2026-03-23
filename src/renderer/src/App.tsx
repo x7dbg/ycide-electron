@@ -3,6 +3,7 @@ import TitleBar from './components/TitleBar/TitleBar'
 import Toolbar from './components/Toolbar/Toolbar'
 import Sidebar from './components/Sidebar/Sidebar'
 import type { TreeNode } from './components/Sidebar/Sidebar'
+import Icon from './components/Icon/Icon'
 import Editor, { type EditorTab, type EditorHandle } from './components/Editor/Editor'
 import OutputPanel, { type OutputMessage, type CommandDetail, type FileProblem } from './components/OutputPanel/OutputPanel'
 import StatusBar from './components/StatusBar/StatusBar'
@@ -16,12 +17,34 @@ type ProjectSessionState = {
   activeTabPath?: string
 }
 
+type RecentOpenedItem = {
+  type: 'project' | 'file'
+  path: string
+  label: string
+}
+
+const RECENT_OPENED_KEY = 'ycide.recentOpened.v1'
+const MAX_RECENT_OPENED = 10
+
+function normalizeResourceTableContent(raw: string): string {
+  const nonEmptyLines = raw
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .filter(line => line.trim() !== '')
+    .map(line => line.replace(/^(\s*)\.常量\b/, '$1.资源'))
+
+  if (nonEmptyLines.length === 0) return '.版本 2\n'
+
+  return `${nonEmptyLines.join('\n')}\n`
+}
+
 function App(): React.JSX.Element {
   const [sidebarWidth, setSidebarWidth] = useState(260)
   const [outputHeight, setOutputHeight] = useState(200)
   const [showOutput, setShowOutput] = useState(true)
   const [showLibrary, setShowLibrary] = useState(false)
   const [showNewProject, setShowNewProject] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [selection, setSelection] = useState<SelectionTarget>(null)
   const [sidebarTab, setSidebarTab] = useState<'project' | 'library' | 'property'>('project')
   const [alignAction, setAlignAction] = useState<AlignAction>(null)
@@ -48,6 +71,42 @@ function App(): React.JSX.Element {
   const [isRunning, setIsRunning] = useState(false)
   const [forceOutputTab, setForceOutputTab] = useState<'compile' | 'problems' | null>(null)
   const [targetArch, setTargetArch] = useState('x64')
+  const [recentOpened, setRecentOpened] = useState<RecentOpenedItem[]>([])
+
+  const pushRecentOpened = useCallback((item: RecentOpenedItem) => {
+    setRecentOpened(prev => {
+      const lowerPath = item.path.toLowerCase()
+      const next = [
+        item,
+        ...prev.filter(p => !(p.type === item.type && p.path.toLowerCase() === lowerPath)),
+      ].slice(0, MAX_RECENT_OPENED)
+      try {
+        localStorage.setItem(RECENT_OPENED_KEY, JSON.stringify(next))
+      } catch {
+        // 忽略持久化异常
+      }
+      return next
+    })
+  }, [])
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(RECENT_OPENED_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as unknown
+      if (!Array.isArray(parsed)) return
+      const normalized = parsed
+        .filter((x): x is RecentOpenedItem => !!x && typeof x === 'object'
+          && (x as RecentOpenedItem).type !== undefined
+          && ((x as RecentOpenedItem).type === 'project' || (x as RecentOpenedItem).type === 'file')
+          && typeof (x as RecentOpenedItem).path === 'string'
+          && typeof (x as RecentOpenedItem).label === 'string')
+        .slice(0, MAX_RECENT_OPENED)
+      setRecentOpened(normalized)
+    } catch {
+      // 忽略无效缓存
+    }
+  }, [])
   // 监听编译器输出
   useEffect(() => {
     const handleOutput = (msg: OutputMessage) => {
@@ -224,6 +283,93 @@ function App(): React.JSX.Element {
       return
     }
 
+    if (commandName.startsWith('__SUBDECL__:')) {
+      const payload = commandName.slice('__SUBDECL__:'.length)
+      const sep = payload.indexOf(':')
+      const subName = (sep >= 0 ? payload.slice(0, sep) : payload).trim()
+      const assemblyName = (sep >= 0 ? payload.slice(sep + 1) : '').trim()
+      if (!subName) return
+
+      const parseEventSub = (name: string): { targetName: string; eventName: string } | null => {
+        if (!name.startsWith('_')) return null
+        const last = name.lastIndexOf('_')
+        if (last <= 1 || last >= name.length - 1) return null
+        return {
+          targetName: name.slice(1, last).trim(),
+          eventName: name.slice(last + 1).trim(),
+        }
+      }
+
+      const normalize = (v: string): string => (v || '').replace(/^_+/, '').trim()
+      const parsedEvent = parseEventSub(subName)
+      let eventDescription = ''
+      if (parsedEvent) {
+        const tabs = openTabsRef.current || []
+        const efwTabs = tabs.filter(t => t.language === 'efw' && t.formData)
+        const formTab = efwTabs.find(t => {
+          const formName = t.formData?.name || ''
+          if (!assemblyName) return normalize(formName) === normalize(parsedEvent.targetName)
+          return assemblyName.includes(formName) || assemblyName.includes(normalize(formName))
+        })
+        const formData = formTab?.formData
+        if (formData) {
+          const control = formData.controls.find(c => normalize(c.name) === normalize(parsedEvent.targetName))
+          const targetType = control ? control.type : '窗口'
+          try {
+            const windowUnits = await window.api.library.getWindowUnits() as Array<{
+              name: string
+              englishName?: string
+              events?: Array<{ name: string; description?: string }>
+            }>
+            const unit = windowUnits.find((u) => u.name === targetType || u.englishName === targetType)
+            const ev = unit?.events?.find((e) => e.name === parsedEvent.eventName)
+            eventDescription = ev?.description || ''
+          } catch {
+            // 忽略描述解析失败，回退到通用提示
+          }
+        }
+      }
+
+      setHighlightParamIndex(paramIndex)
+      setCommandDetail({
+        name: subName,
+        englishName: '',
+        description: '',
+        returnType: '',
+        category: '子程序',
+        libraryName: '当前源码',
+        assemblyName,
+        isEventSubroutine: !!eventDescription,
+        eventDescription,
+        params: [],
+      })
+      setShowOutput(true)
+      return
+    }
+
+    if (commandName.startsWith('__SUB__:')) {
+      const payload = commandName.slice('__SUB__:'.length)
+      const sep = payload.indexOf(':')
+      const subName = (sep >= 0 ? payload.slice(0, sep) : payload).trim()
+      const assemblyName = (sep >= 0 ? payload.slice(sep + 1) : '').trim()
+      if (!subName) return
+      setHighlightParamIndex(paramIndex)
+      setCommandDetail({
+        name: subName,
+        englishName: '',
+        description: '',
+        returnType: '',
+        category: '子程序',
+        libraryName: '当前源码',
+        assemblyName,
+        isEventSubroutine: false,
+        eventDescription: '',
+        params: [],
+      })
+      setShowOutput(true)
+      return
+    }
+
     // 对象.方法 形式，取方法名
     const name = commandName.includes('.') ? commandName.split('.').pop()! : commandName
     setHighlightParamIndex(paramIndex)
@@ -384,6 +530,26 @@ function App(): React.JSX.Element {
     return nodes
   }, [])
 
+  const extractResourceNodes = useCallback((content: string, tableFileName: string): TreeNode[] => {
+    const nodes: TreeNode[] = []
+    const lines = (content || '').replace(/\r\n/g, '\n').split('\n')
+    const re = /^\s*\.(?:资源|常量)\s+([^,\s]+)(?:\s*,\s*(?:["“]([^"”]*)["”]|([^,\s]*)))?/
+    for (let i = 0; i < lines.length; i++) {
+      const m = re.exec(lines[i])
+      if (!m) continue
+      const resourceName = (m[1] || '').trim()
+      const fileName = ((m[2] || m[3]) || '').trim()
+      nodes.push({
+        id: `${tableFileName}::const::${i}`,
+        label: resourceName || fileName || `资源${i + 1}`,
+        type: 'resource',
+        fileId: tableFileName,
+        fileName: tableFileName,
+      })
+    }
+    return nodes
+  }, [])
+
   // 从 epp 文件列表构建项目树，按类别分组
   const buildProjectTreeFromEpp = useCallback(async (projectName: string, files: Array<{ type: string; fileName: string; flag: number }>, projectDir: string): Promise<TreeNode[]> => {
     const windowFiles: TreeNode[] = []
@@ -392,14 +558,7 @@ function App(): React.JSX.Element {
     const constantFiles: TreeNode[] = []
     const dataTypeFiles: TreeNode[] = []
     const dllCmdFiles: TreeNode[] = []
-    const imageResourceFiles: TreeNode[] = []
-    const soundResourceFiles: TreeNode[] = []
-    const videoResourceFiles: TreeNode[] = []
-    const otherResourceFiles: TreeNode[] = []
-
-    const imageExtSet = new Set(['png', 'jpg', 'jpeg', 'bmp', 'gif', 'webp', 'svg', 'ico', 'tif', 'tiff'])
-    const soundExtSet = new Set(['wav', 'mp3', 'ogg', 'wma', 'aac', 'flac', 'm4a', 'mid', 'midi'])
-    const videoExtSet = new Set(['mp4', 'avi', 'mov', 'wmv', 'mkv', 'webm', 'flv', 'm4v', 'mpeg', 'mpg'])
+    const resourceFiles: TreeNode[] = []
 
     for (const f of files) {
       if (f.type === 'EFW') {
@@ -429,28 +588,15 @@ function App(): React.JSX.Element {
         const content = await window.api?.project?.readFile(filePath)
         const dllNodes = extractDllCommandNodes(content || '', f.fileName)
         dllCmdFiles.push({ id: f.fileName, label: f.fileName, type: 'module', children: dllNodes, expanded: false })
+      } else if (f.type === 'ERC') {
+        const filePath = projectDir + '\\' + f.fileName
+        const content = await window.api?.project?.readFile(filePath)
+        const resNodes = extractResourceNodes(content || '', f.fileName)
+        resourceFiles.push({ id: f.fileName, label: f.fileName, type: 'module', children: resNodes, expanded: false })
       } else {
-        const ext = (f.fileName.split('.').pop() || '').toLowerCase()
-        const node = { id: f.fileName, label: f.fileName, type: 'resource' as const }
-        if (videoExtSet.has(ext)) {
-          videoResourceFiles.push(node)
-        } else if (imageExtSet.has(ext)) {
-          imageResourceFiles.push(node)
-        } else if (soundExtSet.has(ext)) {
-          soundResourceFiles.push(node)
-        } else {
-          otherResourceFiles.push(node)
-        }
+        if (f.type === 'RES') continue
+        resourceFiles.push({ id: f.fileName, label: f.fileName, type: 'resource' })
       }
-    }
-
-    const resourceChildren: TreeNode[] = [
-      { id: '_cat_resources_images', label: '图片', type: 'folder', expanded: true, children: imageResourceFiles },
-      { id: '_cat_resources_sounds', label: '声音', type: 'folder', expanded: true, children: soundResourceFiles },
-      { id: '_cat_resources_videos', label: '视频', type: 'folder', expanded: true, children: videoResourceFiles },
-    ]
-    if (otherResourceFiles.length > 0) {
-      resourceChildren.push({ id: '_cat_resources_others', label: '其他资源', type: 'folder', expanded: false, children: otherResourceFiles })
     }
 
     const categories: TreeNode[] = []
@@ -460,10 +606,10 @@ function App(): React.JSX.Element {
     categories.push({ id: '_cat_constants', label: '常量表', type: 'folder', expanded: true, children: constantFiles })
     categories.push({ id: '_cat_datatypes', label: '自定义数据类型', type: 'folder', expanded: true, children: dataTypeFiles })
     categories.push({ id: '_cat_dllcmds', label: 'DLL命令', type: 'folder', expanded: true, children: dllCmdFiles })
-    categories.push({ id: '_cat_resources', label: '资源', type: 'folder', expanded: false, children: resourceChildren })
+    categories.push({ id: '_cat_resources', label: '资源', type: 'folder', expanded: false, children: resourceFiles })
 
     return [{ id: 'root', label: projectName, type: 'folder', expanded: true, children: categories }]
-  }, [extractSubroutineNodes, extractGlobalVarNodes, extractConstantNodes, extractDataTypeNodes, extractDllCommandNodes])
+  }, [extractSubroutineNodes, extractGlobalVarNodes, extractConstantNodes, extractDataTypeNodes, extractDllCommandNodes, extractResourceNodes])
 
   // 标签页变化时保存到项目目录，并重新检查设计时诊断
   const handleOpenTabsChange = useCallback((tabs: EditorTab[]) => {
@@ -525,7 +671,123 @@ function App(): React.JSX.Element {
     window.api?.window.close()
   }, [])
 
+  const buildTabFromPath = useCallback(async (fp: string): Promise<EditorTab | null> => {
+    const fileName = fp.split('\\').pop() || ''
+    const ext = fileName.split('.').pop()?.toLowerCase()
+    const content = await window.api?.project?.readFile(fp)
+    if (content === null || content === undefined) return null
+
+    if (ext === 'efw') {
+      const efwData = JSON.parse(content)
+      const formData: DesignForm = {
+        name: efwData.name || fileName.replace('.efw', ''),
+        title: efwData.title || '',
+        width: efwData.width || 592,
+        height: efwData.height || 384,
+        sourceFile: efwData.sourceFile,
+        properties: efwData.properties || undefined,
+        controls: (efwData.controls || []).map((c: any) => ({
+          id: c.id, type: c.type, name: c.name,
+          left: c.x ?? c.left ?? 0, top: c.y ?? c.top ?? 0,
+          width: c.width ?? 100, height: c.height ?? 30,
+          text: c.properties?.['标题'] ?? c.properties?.['内容'] ?? c.properties?.['文本'] ?? c.text ?? c.name ?? '',
+          visible: c.visible ?? true, enabled: c.enabled ?? true, properties: c.properties || {},
+        })),
+      }
+      return { id: fp, label: fileName, language: 'efw', value: '', savedValue: JSON.stringify(formData, null, 2), filePath: fp, formData }
+    }
+
+    if (ext === 'eyc' || ext === 'ecc' || ext === 'egv' || ext === 'ecs' || ext === 'edt' || ext === 'ell' || ext === 'erc') {
+      const normalized = ext === 'erc'
+        ? normalizeResourceTableContent(content)
+        : content
+      return { id: fp, label: fileName, language: ext === 'ecc' ? 'eyc' : ext, value: normalized, savedValue: normalized, filePath: fp }
+    }
+
+    return null
+  }, [])
+
+  const openProjectByEppPath = useCallback(async (eppPath: string) => {
+    const eppInfo = await window.api?.project?.parseEpp(eppPath)
+    if (!eppInfo) return false
+    const dir = eppPath.replace(/\\[^\\]+$/, '')
+    setCurrentProjectDir(dir)
+    if (eppInfo.platform) setTargetArch(eppInfo.platform)
+    setProjectTree(await buildProjectTreeFromEpp(eppInfo.projectName, eppInfo.files, dir))
+
+    const session = await window.api?.project?.loadOpenTabs(dir)
+    const savedPaths = session?.openTabs || []
+    const restoredTabs: EditorTab[] = []
+    if (savedPaths && savedPaths.length > 0) {
+      for (const fp of savedPaths) {
+        const tab = await buildTabFromPath(fp)
+        if (tab) restoredTabs.push(tab)
+      }
+    }
+
+    if (session?.activeTabPath && restoredTabs.length > 1) {
+      const activeIndex = restoredTabs.findIndex(t => t.filePath?.toLowerCase() === session.activeTabPath?.toLowerCase())
+      if (activeIndex > 0) {
+        const [activeTab] = restoredTabs.splice(activeIndex, 1)
+        restoredTabs.unshift(activeTab)
+      }
+    }
+
+    if (restoredTabs.length === 0) {
+      const mainFile = eppInfo.files.find((f: { type: string; fileName: string; flag: number }) => f.flag === 1)
+        || eppInfo.files.find((f: { type: string; fileName: string; flag: number }) => f.type === 'EFW')
+        || eppInfo.files[0]
+      if (mainFile) {
+        const mainTab = await buildTabFromPath(dir + '\\' + mainFile.fileName)
+        if (mainTab) restoredTabs.push(mainTab)
+      }
+    }
+
+    if (restoredTabs.length > 0) setOpenProjectFiles(restoredTabs)
+    pushRecentOpened({
+      type: 'project',
+      path: eppPath,
+      label: eppInfo.projectName || (eppPath.split('\\').pop() || eppPath),
+    })
+    return true
+  }, [buildProjectTreeFromEpp, buildTabFromPath, pushRecentOpened])
+
+  const openFileByPath = useCallback(async (filePath: string, targetLine?: number) => {
+    const ext = filePath.split('.').pop()?.toLowerCase()
+    if (ext === 'epp') {
+      return openProjectByEppPath(filePath)
+    }
+
+    const tab = await buildTabFromPath(filePath)
+    if (!tab) return false
+    editorRef.current?.openFile(tab)
+    if (targetLine && targetLine > 0) {
+      setTimeout(() => {
+        editorRef.current?.navigateToLine(targetLine)
+      }, 80)
+    }
+    const label = filePath.split('\\').pop() || filePath
+    pushRecentOpened({ type: 'file', path: filePath, label })
+    return true
+  }, [buildTabFromPath, openProjectByEppPath, pushRecentOpened])
+
   const handleMenuAction = useCallback(async (action: string) => {
+    if (action.startsWith('file:openRecent:')) {
+      const encoded = action.substring('file:openRecent:'.length)
+      try {
+        const payload = JSON.parse(decodeURIComponent(encoded)) as { type: 'project' | 'file'; path: string }
+        if (!payload?.path) return
+        if (payload.type === 'project') {
+          await openProjectByEppPath(payload.path)
+        } else {
+          await openFileByPath(payload.path)
+        }
+      } catch {
+        // 忽略无效最近打开项
+      }
+      return
+    }
+
     switch (action) {
       // 文件菜单
       case 'file:newProject':
@@ -534,78 +796,7 @@ function App(): React.JSX.Element {
       case 'file:openProject': {
         const eppPath = await window.api?.project?.openEpp()
         if (!eppPath) return
-        const eppInfo = await window.api?.project?.parseEpp(eppPath)
-        if (!eppInfo) return
-        const dir = eppPath.replace(/\\[^\\]+$/, '')
-        setCurrentProjectDir(dir)
-        if (eppInfo.platform) setTargetArch(eppInfo.platform)
-        setProjectTree(await buildProjectTreeFromEpp(eppInfo.projectName, eppInfo.files, dir))
-
-        const buildTabFromPath = async (fp: string): Promise<EditorTab | null> => {
-          const fileName = fp.split('\\').pop() || ''
-          const ext = fileName.split('.').pop()?.toLowerCase()
-          const content = await window.api?.project?.readFile(fp)
-          if (content === null || content === undefined) return null
-
-          if (ext === 'efw') {
-            const efwData = JSON.parse(content)
-            const formData: DesignForm = {
-              name: efwData.name || fileName.replace('.efw', ''),
-              title: efwData.title || '',
-              width: efwData.width || 592,
-              height: efwData.height || 384,
-              sourceFile: efwData.sourceFile,
-              properties: efwData.properties || undefined,
-              controls: (efwData.controls || []).map((c: any) => ({
-                id: c.id, type: c.type, name: c.name,
-                left: c.x ?? c.left ?? 0, top: c.y ?? c.top ?? 0,
-                width: c.width ?? 100, height: c.height ?? 30,
-                text: c.properties?.['标题'] ?? c.properties?.['内容'] ?? c.properties?.['文本'] ?? c.text ?? c.name ?? '',
-                visible: c.visible ?? true, enabled: c.enabled ?? true, properties: c.properties || {},
-              }))
-            }
-            return { id: fp, label: fileName, language: 'efw', value: '', savedValue: JSON.stringify(formData, null, 2), filePath: fp, formData }
-          }
-
-          if (ext === 'eyc' || ext === 'ecc' || ext === 'egv' || ext === 'ecs' || ext === 'edt' || ext === 'ell') {
-            return { id: fp, label: fileName, language: ext === 'ecc' ? 'eyc' : ext, value: content, savedValue: content, filePath: fp }
-          }
-
-          return null
-        }
-
-        // 恢复之前打开的标签页
-        const session = await window.api?.project?.loadOpenTabs(dir)
-        const savedPaths = session?.openTabs || []
-        const restoredTabs: EditorTab[] = []
-        if (savedPaths && savedPaths.length > 0) {
-          for (const fp of savedPaths) {
-            const tab = await buildTabFromPath(fp)
-            if (tab) restoredTabs.push(tab)
-          }
-        }
-
-        // Editor 默认激活第一个标签，因此将上次活动标签前置
-        if (session?.activeTabPath && restoredTabs.length > 1) {
-          const activeIndex = restoredTabs.findIndex(t => t.filePath?.toLowerCase() === session.activeTabPath?.toLowerCase())
-          if (activeIndex > 0) {
-            const [activeTab] = restoredTabs.splice(activeIndex, 1)
-            restoredTabs.unshift(activeTab)
-          }
-        }
-
-        // 未恢复到任何标签页时，默认打开 epp 中标记的主活动文件（flag=1）
-        if (restoredTabs.length === 0) {
-          const mainFile = eppInfo.files.find((f: { type: string; fileName: string; flag: number }) => f.flag === 1)
-            || eppInfo.files.find((f: { type: string; fileName: string; flag: number }) => f.type === 'EFW')
-            || eppInfo.files[0]
-          if (mainFile) {
-            const mainTab = await buildTabFromPath(dir + '\\' + mainFile.fileName)
-            if (mainTab) restoredTabs.push(mainTab)
-          }
-        }
-
-        if (restoredTabs.length > 0) setOpenProjectFiles(restoredTabs)
+        await openProjectByEppPath(eppPath)
         break
       }
       case 'file:save':
@@ -650,36 +841,6 @@ function App(): React.JSX.Element {
       case 'edit:find':
       case 'edit:replace':
         editorRef.current?.editorAction(action.split(':')[1])
-        break
-
-      // 视图菜单
-      case 'view:property':
-        setSidebarTab('property')
-        break
-      case 'view:output':
-        setShowOutput(v => !v)
-        break
-      case 'view:library':
-        setSidebarTab('library')
-        break
-      case 'view:project':
-        setSidebarTab('project')
-        break
-
-      // 工具菜单
-      case 'tools:library':
-        setShowLibrary(true)
-        break
-
-      // 编译菜单
-      case 'build:compile':
-        handleCompile()
-        break
-      case 'build:compile-static':
-        handleCompileStatic()
-        break
-      case 'build:build':
-        handleCompile()
         break
       case 'build:run':
         handleCompileRun()
@@ -909,8 +1070,130 @@ function App(): React.JSX.Element {
         break
       }
       case 'insert:window':
-      case 'insert:resource':
+      {
+        const dir = currentProjectDirRef.current
+        if (!dir) break
+
+        const existingWindowFiles = projectTree[0]?.children
+          ?.find(c => c.id === '_cat_windows')?.children?.map(c => c.label) || []
+
+        let n = 1
+        while (existingWindowFiles.includes('窗口' + n + '.efw')) n++
+
+        const windowName = '窗口' + n
+        const efwFileName = windowName + '.efw'
+        const eycFileName = windowName + '.eyc'
+
+        const efwData = JSON.stringify({
+          type: 'window',
+          name: windowName,
+          title: windowName,
+          width: 592,
+          height: 384,
+          sourceFile: eycFileName,
+          controls: [],
+        }, null, 2)
+
+        const eycContent = '.版本 2\n.程序集 窗口程序集_' + windowName + '\n\n'
+
+        await window.api?.project?.addFile(dir, efwFileName, 'EFW', efwData)
+        await window.api?.project?.addFile(dir, eycFileName, 'EYC', eycContent)
+
+        setProjectTree(prev => prev.map(root => ({
+          ...root,
+          children: root.children?.map(cat => {
+            if (cat.id === '_cat_windows') {
+              return {
+                ...cat,
+                children: [...(cat.children || []), { id: efwFileName, label: efwFileName, type: 'window' as const }],
+              }
+            }
+            if (cat.id === '_cat_sources') {
+              return {
+                ...cat,
+                children: [...(cat.children || []), {
+                  id: eycFileName,
+                  label: eycFileName,
+                  type: 'module' as const,
+                  children: extractSubroutineNodes(eycContent, eycFileName),
+                  expanded: false,
+                }],
+              }
+            }
+            return cat
+          }),
+        })))
+
+        await openFileByPath(dir + '\\' + efwFileName)
         break
+      }
+      case 'insert:resource':
+      {
+        const dir = currentProjectDirRef.current
+        if (!dir) break
+
+        const resourceFileName = '资源表.erc'
+        const resourceTablePath = `${dir}\\${resourceFileName}`
+        const editorFiles = editorRef.current?.getEditorFiles?.() || {}
+
+        let content = ''
+        let fileExists = false
+        if (typeof editorFiles[resourceFileName] === 'string') {
+          content = editorFiles[resourceFileName]
+          fileExists = true
+        } else {
+          const diskContent = await window.api?.project?.readFile(resourceTablePath)
+          if (typeof diskContent === 'string') {
+            content = diskContent
+            fileExists = true
+          }
+        }
+
+        if (!fileExists) {
+          content = '.版本 2\n'
+        }
+
+        content = normalizeResourceTableContent(content)
+
+        const lines = content.replace(/\r\n/g, '\n').split('\n')
+        let nextIndex = 1
+        for (const line of lines) {
+          const match = /^\s*\.(?:资源|常量)\s+资源(\d+)\b/.exec(line)
+          if (!match) continue
+          const n = Number(match[1])
+          if (Number.isFinite(n) && n >= nextIndex) nextIndex = n + 1
+        }
+
+        const newRow = `.资源 资源${nextIndex}, "", 其它`
+        let normalized = content.replace(/\r\n/g, '\n')
+        if (normalized.length > 0 && !normalized.endsWith('\n')) {
+          normalized += '\n'
+        }
+        const nextContent = `${normalized}${newRow}\n`
+
+        if (fileExists) {
+          await window.api?.file?.save(resourceTablePath, nextContent)
+        } else {
+          const addResult = await window.api?.project?.addFile(dir, resourceFileName, 'ERC', nextContent)
+          if (typeof addResult !== 'string' || addResult.length === 0) {
+            setOutputMessages(prev => [...prev, { type: 'error', text: '创建资源表失败: addFile 返回无效结果' }])
+            break
+          }
+        }
+
+        setOutputMessages(prev => [...prev, { type: 'info', text: `已在 ${resourceFileName} 插入空资源: 资源${nextIndex}` }])
+        editorRef.current?.upsertFile({
+          id: resourceTablePath,
+          label: resourceFileName,
+          language: 'erc',
+          value: nextContent,
+          savedValue: nextContent,
+          filePath: resourceTablePath,
+        })
+        await refreshProjectTree()
+        setSidebarTab('project')
+        break
+      }
 
       // 主题切换
       default:
@@ -920,46 +1203,15 @@ function App(): React.JSX.Element {
         }
         break
     }
-  }, [buildProjectTreeFromEpp, extractGlobalVarNodes, extractConstantNodes, extractDataTypeNodes, extractDllCommandNodes, applyTheme, handleCompile, handleCompileStatic, handleCompileRun, handleStop, handleAppClose])
+  }, [openProjectByEppPath, openFileByPath, extractSubroutineNodes, extractGlobalVarNodes, extractConstantNodes, extractDataTypeNodes, extractDllCommandNodes, applyTheme, handleCompile, handleCompileStatic, handleCompileRun, handleStop, handleAppClose, projectTree, refreshProjectTree])
 
   // 双击资源管理器文件时打开
   const handleOpenFile = useCallback(async (fileId: string, fileName: string, targetLine?: number) => {
     const dir = currentProjectDirRef.current
     if (!dir) return
     const filePath = dir + '\\' + fileName
-    const ext = fileName.split('.').pop()?.toLowerCase()
-
-    if (ext === 'efw') {
-      const content = await window.api?.project?.readFile(filePath)
-      if (!content) return
-      const efwData = JSON.parse(content)
-      const formData: DesignForm = {
-        name: efwData.name || fileName.replace('.efw', ''),
-        title: efwData.title || '',
-        width: efwData.width || 592,
-        height: efwData.height || 384,
-        sourceFile: efwData.sourceFile,
-        properties: efwData.properties || undefined,
-        controls: (efwData.controls || []).map((c: any) => ({
-          id: c.id, type: c.type, name: c.name,
-          left: c.x ?? c.left ?? 0, top: c.y ?? c.top ?? 0,
-          width: c.width ?? 100, height: c.height ?? 30,
-          text: c.properties?.['标题'] ?? c.properties?.['内容'] ?? c.properties?.['文本'] ?? c.text ?? c.name ?? '',
-          visible: c.visible ?? true, enabled: c.enabled ?? true, properties: c.properties || {},
-        }))
-      }
-      editorRef.current?.openFile({ id: filePath, label: fileName, language: 'efw', value: '', savedValue: JSON.stringify(formData, null, 2), filePath, formData })
-    } else if (ext === 'eyc' || ext === 'ecc' || ext === 'egv' || ext === 'ecs' || ext === 'edt' || ext === 'ell') {
-      const content = await window.api?.project?.readFile(filePath)
-      if (!content) return
-      editorRef.current?.openFile({ id: filePath, label: fileName, language: ext === 'ecc' ? 'eyc' : ext, value: content, savedValue: content, filePath })
-      if (targetLine && targetLine > 0) {
-        setTimeout(() => {
-          editorRef.current?.navigateToLine(targetLine)
-        }, 80)
-      }
-    }
-  }, [])
+    await openFileByPath(filePath, targetLine)
+  }, [openFileByPath])
 
   const handleNewProjectConfirm = useCallback(async (info: { name: string; path: string; type: string; platform: string }) => {
     try {
@@ -1028,10 +1280,15 @@ function App(): React.JSX.Element {
           }])
         }
       }
+      pushRecentOpened({
+        type: 'project',
+        path: result.eppPath,
+        label: info.name,
+      })
     } catch (err) {
       console.error('创建项目失败:', err)
     }
-  }, [buildProjectTreeFromEpp])
+  }, [buildProjectTreeFromEpp, pushRecentOpened])
 
   // 全局快捷键
   useEffect(() => {
@@ -1093,9 +1350,35 @@ function App(): React.JSX.Element {
     return () => window.removeEventListener('keydown', handler)
   }, [handleMenuAction, showLibrary, showNewProject])
 
+  const openProjectExplorer = useCallback(() => {
+    setSidebarCollapsed(false)
+    setSidebarTab('project')
+  }, [])
+
+  const openLibraryPanel = useCallback(() => {
+    setSidebarCollapsed(false)
+    setSidebarTab('library')
+  }, [])
+
+  const openScmPanel = useCallback(() => {
+    setSidebarCollapsed(false)
+    setSidebarTab('project')
+    setShowOutput(true)
+    setOutputMessages(prev => [...prev, { type: 'info', text: '源代码管理功能正在开发中。' }])
+  }, [])
+
+  const openUserPanel = useCallback(() => {
+    setShowOutput(true)
+    setOutputMessages(prev => [...prev, { type: 'info', text: '用户功能正在开发中。' }])
+  }, [])
+
+  const toggleSidebarCollapse = useCallback(() => {
+    setSidebarCollapsed(prev => !prev)
+  }, [])
+
   return (
     <div className="app">
-      <TitleBar onMenuAction={handleMenuAction} onWindowClose={() => { void handleAppClose() }} hasProject={!!currentProjectDir} hasOpenFile={(openProjectFiles?.length ?? 0) > 0} themes={themeList} currentTheme={currentTheme} />
+      <TitleBar onMenuAction={handleMenuAction} onWindowClose={() => { void handleAppClose() }} hasProject={!!currentProjectDir} hasOpenFile={(openProjectFiles?.length ?? 0) > 0} themes={themeList} currentTheme={currentTheme} recentOpened={recentOpened} />
       <Toolbar
         hasControlSelected={multiSelectCount >= 2}
         onAlign={setAlignAction}
@@ -1116,42 +1399,95 @@ function App(): React.JSX.Element {
         onRedo={() => handleMenuAction('edit:redo')}
       />
       <div className="app-body">
-        <Sidebar width={sidebarWidth} onResize={setSidebarWidth} selection={selection} activeTab={sidebarTab} onTabChange={setSidebarTab} onSelectControl={setSelection} onPropertyChange={(kind, ctrlId, prop, val) => editorRef.current?.updateFormProperty(kind, ctrlId, prop, val)} projectTree={projectTree} onOpenFile={handleOpenFile} activeFileId={activeFileId ? activeFileId.replace(/^.*[\\/]/, '') : null} projectDir={currentProjectDir} onEventNavigate={(sel, eventName, eventArgs) => editorRef.current?.navigateToEventSub(sel, eventName, eventArgs)} onLibraryChange={handleLibraryChange} />
-        <div className="app-main">
-          <Editor
-            ref={editorRef}
-            onSelectControl={setSelection}
-            onSidebarTab={setSidebarTab}
-            selection={selection}
-            alignAction={alignAction}
-            onAlignDone={handleAlignDone}
-            onMultiSelectChange={setMultiSelectCount}
-            openProjectFiles={openProjectFiles}
-            onOpenTabsChange={handleOpenTabsChange}
-            onActiveTabChange={setActiveFileId}
-            onCommandClick={handleCommandClick}
-            onCommandClear={handleCommandClear}
-            onProblemsChange={setFileProblems}
-            onCursorChange={(line, col) => { setCursorLine(line); setCursorColumn(col) }}
-            onDocTypeChange={setDocType}
-            projectDir={currentProjectDir}
-            onProjectTreeRefresh={refreshProjectTree}
-          />
+        <aside className="activity-bar" aria-label="主活动栏">
+          <button
+            type="button"
+            className="activity-button"
+            title={sidebarCollapsed ? '展开侧边栏' : '收缩侧边栏'}
+            aria-label={sidebarCollapsed ? '展开侧边栏' : '收缩侧边栏'}
+            onClick={toggleSidebarCollapse}
+          >
+            <Icon name={sidebarCollapsed ? 'expand-right' : 'collapse-left'} size={20} />
+          </button>
+          <button
+            type="button"
+            className={`activity-button ${!sidebarCollapsed && sidebarTab === 'project' ? 'active' : ''}`}
+            title="资源管理器"
+            aria-label="资源管理器"
+            onClick={openProjectExplorer}
+          >
+            <Icon name="resource-view" size={20} />
+          </button>
+          <button
+            type="button"
+            className="activity-button"
+            title="源代码管理"
+            aria-label="源代码管理"
+            onClick={openScmPanel}
+          >
+            <Icon name="source-control" size={20} />
+          </button>
+          <button
+            type="button"
+            className={`activity-button ${!sidebarCollapsed && sidebarTab === 'library' ? 'active' : ''}`}
+            title="插件"
+            aria-label="插件"
+            onClick={openLibraryPanel}
+          >
+            <Icon name="extension" size={20} />
+          </button>
+          <button
+            type="button"
+            className="activity-button activity-button-bottom"
+            title="用户"
+            aria-label="用户"
+            onClick={openUserPanel}
+          >
+            <Icon name="account" size={20} />
+          </button>
+        </aside>
+        <div className="app-content">
+          <div className="app-side">
+            {!sidebarCollapsed && (
+              <Sidebar width={sidebarWidth} onResize={setSidebarWidth} selection={selection} activeTab={sidebarTab} onTabChange={setSidebarTab} onSelectControl={setSelection} onPropertyChange={(kind, ctrlId, prop, val) => editorRef.current?.updateFormProperty(kind, ctrlId, prop, val)} projectTree={projectTree} onOpenFile={handleOpenFile} activeFileId={activeFileId ? activeFileId.replace(/^.*[\\/]/, '') : null} projectDir={currentProjectDir} onEventNavigate={(sel, eventName, eventArgs) => editorRef.current?.navigateToEventSub(sel, eventName, eventArgs)} onLibraryChange={handleLibraryChange} />
+            )}
+            <div className="app-main">
+              <Editor
+                ref={editorRef}
+                onSelectControl={setSelection}
+                onSidebarTab={setSidebarTab}
+                selection={selection}
+                alignAction={alignAction}
+                onAlignDone={handleAlignDone}
+                onMultiSelectChange={setMultiSelectCount}
+                openProjectFiles={openProjectFiles}
+                onOpenTabsChange={handleOpenTabsChange}
+                onActiveTabChange={setActiveFileId}
+                onCommandClick={handleCommandClick}
+                onCommandClear={handleCommandClear}
+                onProblemsChange={setFileProblems}
+                onCursorChange={(line, col) => { setCursorLine(line); setCursorColumn(col) }}
+                onDocTypeChange={setDocType}
+                projectDir={currentProjectDir}
+                onProjectTreeRefresh={refreshProjectTree}
+              />
+            </div>
+          </div>
+          {showOutput && (
+            <OutputPanel
+              height={outputHeight}
+              onResize={setOutputHeight}
+              onClose={() => setShowOutput(false)}
+              messages={outputMessages}
+              commandDetail={commandDetail}
+              highlightParamIndex={highlightParamIndex}
+              problems={[...fileProblems, ...designProblems]}
+              forceTab={forceOutputTab}
+              onProblemClick={(p) => editorRef.current?.navigateToLine(p.line)}
+            />
+          )}
         </div>
       </div>
-      {showOutput && (
-        <OutputPanel
-          height={outputHeight}
-          onResize={setOutputHeight}
-          onClose={() => setShowOutput(false)}
-          messages={outputMessages}
-          commandDetail={commandDetail}
-          highlightParamIndex={highlightParamIndex}
-          problems={[...fileProblems, ...designProblems]}
-          forceTab={forceOutputTab}
-          onProblemClick={(p) => editorRef.current?.navigateToLine(p.line)}
-        />
-      )}
       <StatusBar
         onToggleOutput={() => setShowOutput(!showOutput)}
         errorCount={[...fileProblems, ...designProblems].filter(p => p.severity === 'error').length}

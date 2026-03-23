@@ -14,6 +14,9 @@ export interface CommandDetail {
   returnType: string
   category: string
   libraryName: string
+  assemblyName?: string
+  isEventSubroutine?: boolean
+  eventDescription?: string
   params: Array<{
     name: string
     type: string
@@ -144,6 +147,22 @@ function OutputPanel({ height, onResize, onClose, messages = [], commandDetail, 
         <div className="output-content output-hint-content" tabIndex={0}>
           {commandDetail ? (() => {
             const cd = commandDetail
+            const isSourceSubroutine = cd.category === '子程序' && cd.libraryName === '当前源码'
+            if (isSourceSubroutine) {
+              if (cd.isEventSubroutine && cd.eventDescription) {
+                return (
+                  <div className="cmd-detail">
+                    <div className="cmd-detail-desc">★★ 本子程序为事件处理子程序，请不要修改此子程序的名称、返回值及参数定义，否则将导致对应事件不能传递到此事件处理子程序。</div>
+                    <div className="cmd-detail-desc">{cd.eventDescription}</div>
+                  </div>
+                )
+              }
+              return (
+                <div className="cmd-detail">
+                  <div className="cmd-detail-desc">子程序名：{cd.name};  所处程序集: {cd.assemblyName || '（未识别）'}</div>
+                </div>
+              )
+            }
             // 中文类型名对应的英文名映射
             const typeEnglishMap: Record<string, string> = {
               '整数型': 'int', '短整数型': 'short', '长整数型': 'long',

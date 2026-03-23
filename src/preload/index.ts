@@ -32,6 +32,25 @@ const api = {
     openEpp: () => ipcRenderer.invoke('project:openEpp') as Promise<string | null>,
     addFile: (projectDir: string, fileName: string, fileType: string, content: string) =>
       ipcRenderer.invoke('project:addFile', projectDir, fileName, fileType, content) as Promise<string>,
+    addResources: (projectDir: string) =>
+      ipcRenderer.invoke('project:addResources', projectDir) as Promise<string[]>,
+    importResourceFile: (projectDir: string) =>
+      ipcRenderer.invoke('project:importResourceFile', projectDir) as Promise<
+        | { success: true; fileName: string }
+        | { success: false; canceled: true }
+        | { success: false; canceled: false; message: string }
+      >,
+    replaceResourceFile: (projectDir: string, targetFileName: string) =>
+      ipcRenderer.invoke('project:replaceResourceFile', projectDir, targetFileName) as Promise<
+        | { success: true; targetFileName: string }
+        | { success: false; canceled: true }
+        | { success: false; canceled: false; message: string }
+      >,
+    getResourcePreviewData: (projectDir: string, fileName: string, withContent = true) =>
+      ipcRenderer.invoke('project:getResourcePreviewData', projectDir, fileName, withContent) as Promise<
+        | { success: true; mime: string; ext: string; filePath: string; sizeBytes: number; modifiedAtMs: number; base64?: string }
+        | { success: false; message: string }
+      >,
     renameWindow: (projectDir: string, oldName: string, newName: string, openEycPaths: string[]) =>
       ipcRenderer.invoke('project:renameWindow', projectDir, oldName, newName, openEycPaths) as Promise<{ newEfwPath: string; newEycPath: string }>,
     renameClassModule: (projectDir: string, oldFileName: string, newFileName: string, oldClassName: string, newClassName: string, openSourcePaths: string[]) =>

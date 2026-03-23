@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import { join, dirname } from 'path'
-import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, appendFileSync } from 'fs'
+import { join, dirname, basename, extname } from 'path'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, appendFileSync, copyFileSync, statSync } from 'fs'
 import { libraryManager } from './library-manager'
 import { compileProject, runExecutable, stopExecutable, isRunning } from './compiler'
 
@@ -398,6 +398,251 @@ app.whenReady().then(() => {
       }
     }
     return filePath
+  })
+
+  // 导入资源文件到项目目录并写入 .epp
+  ipcMain.handle('project:addResources', async (_event, projectDir: string) => {
+    const win = BrowserWindow.getFocusedWindow()
+    if (!win || !existsSync(projectDir)) return []
+
+    const result = await dialog.showOpenDialog(win, {
+      title: '选择资源文件',
+      properties: ['openFile', 'multiSelections'],
+    })
+    if (result.canceled || result.filePaths.length === 0) return []
+
+    const eppFiles = readdirSync(projectDir).filter(f => f.endsWith('.epp'))
+    const eppPath = eppFiles.length > 0 ? join(projectDir, eppFiles[0]) : ''
+    let eppContent = eppPath && existsSync(eppPath) ? readFileSync(eppPath, 'utf-8') : ''
+    const imported: string[] = []
+    const resourceDir = join(projectDir, 'rc')
+    if (!existsSync(resourceDir)) {
+      mkdirSync(resourceDir, { recursive: true })
+    }
+    const resourceTableFileName = '资源表.erc'
+    const resourceTablePath = join(projectDir, resourceTableFileName)
+    const inferResourceType = (name: string): string => {
+      const ext = (extname(name) || '').toLowerCase().replace('.', '')
+      const imageExt = new Set(['png', 'jpg', 'jpeg', 'bmp', 'gif', 'webp', 'svg', 'ico', 'tif', 'tiff'])
+      const audioExt = new Set(['wav', 'mp3', 'ogg', 'wma', 'aac', 'flac', 'm4a', 'mid', 'midi'])
+      const videoExt = new Set(['mp4', 'avi', 'mov', 'wmv', 'mkv', 'webm', 'flv', 'm4v', 'mpeg', 'mpg'])
+      if (imageExt.has(ext)) return '图片'
+      if (audioExt.has(ext)) return '声音'
+      if (videoExt.has(ext)) return '视频'
+      return '其它'
+    }
+
+    const ensureEppLine = (fileType: string, fileName: string): void => {
+      if (!eppPath) return
+      const escapedFileName = fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const existed = new RegExp(`^File=[^|]+\\|${escapedFileName}\\|\\d+$`, 'm').test(eppContent)
+      if (!existed) {
+        const newLine = `File=${fileType}|${fileName}|0`
+        eppContent = eppContent.trimEnd() + '\n' + newLine + '\n'
+      }
+    }
+
+    const ensureUniqueName = (name: string): string => {
+      const ext = extname(name)
+      const stem = ext ? name.slice(0, -ext.length) : name
+      let candidate = name
+      let idx = 1
+      while (existsSync(join(resourceDir, candidate))) {
+        candidate = `${stem}_${idx}${ext}`
+        idx++
+      }
+      return candidate
+    }
+
+    for (const srcPath of result.filePaths) {
+      const srcName = basename(srcPath)
+      const targetName = ensureUniqueName(srcName)
+      const targetPath = join(resourceDir, targetName)
+      copyFileSync(srcPath, targetPath)
+      imported.push(targetName)
+      ensureEppLine('RES', targetName)
+    }
+
+    // 将资源记录写入 资源表.erc（资源表风格）
+    let tableContent = existsSync(resourceTablePath)
+      ? readFileSync(resourceTablePath, 'utf-8')
+      : '.版本 2\n\n'
+
+    const existingResNames = new Set<string>()
+    let maxResourceIndex = 0
+    const rowRe = /^\s*\.(?:资源|常量)\s+([^,\s]+)\s*,\s*["“]([^"”]+)["”]/gm
+    let m: RegExpExecArray | null
+    while ((m = rowRe.exec(tableContent)) !== null) {
+      const resName = (m[1] || '').trim()
+      const fileName = (m[2] || '').trim()
+      if (fileName) existingResNames.add(fileName)
+      const idxMatch = /^资源(\d+)$/.exec(resName)
+      if (idxMatch) maxResourceIndex = Math.max(maxResourceIndex, parseInt(idxMatch[1], 10))
+    }
+
+    for (const fileName of imported) {
+      if (existingResNames.has(fileName)) continue
+      maxResourceIndex += 1
+      const resourceType = inferResourceType(fileName)
+      tableContent = tableContent.trimEnd() + `\n.资源 资源${maxResourceIndex}, "${fileName}", ${resourceType}\n`
+      existingResNames.add(fileName)
+    }
+
+    writeFileSync(resourceTablePath, tableContent.endsWith('\n') ? tableContent : tableContent + '\n', 'utf-8')
+    ensureEppLine('ERC', resourceTableFileName)
+
+    if (eppPath) {
+      writeFileSync(eppPath, eppContent, 'utf-8')
+    }
+
+    return imported
+  })
+
+  // 替换项目中的现有资源文件内容（保持资源文件名不变）
+  ipcMain.handle('project:replaceResourceFile', async (_event, projectDir: string, targetFileName: string) => {
+    const win = BrowserWindow.getFocusedWindow()
+    if (!win || !existsSync(projectDir) || !targetFileName) {
+      return { success: false as const, canceled: false as const, message: '无效参数' }
+    }
+
+    const targetPath = (() => {
+      const rcPath = join(projectDir, 'rc', targetFileName)
+      if (existsSync(rcPath)) return rcPath
+      const legacyPath = join(projectDir, targetFileName)
+      if (existsSync(legacyPath)) return legacyPath
+      return rcPath
+    })()
+    const result = await dialog.showOpenDialog(win, {
+      title: `替换资源文件：${targetFileName}`,
+      properties: ['openFile'],
+    })
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false as const, canceled: true as const }
+    }
+
+    try {
+      copyFileSync(result.filePaths[0], targetPath)
+      return { success: true as const, targetFileName }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return { success: false as const, canceled: false as const, message }
+    }
+  })
+
+  // 导入单个资源文件到项目目录（不改资源表），返回导入后的文件名
+  ipcMain.handle('project:importResourceFile', async (_event, projectDir: string) => {
+    const win = BrowserWindow.getFocusedWindow()
+    if (!win || !existsSync(projectDir)) {
+      return { success: false as const, canceled: false as const, message: '无效参数' }
+    }
+
+    const result = await dialog.showOpenDialog(win, {
+      title: '选择资源文件',
+      properties: ['openFile'],
+    })
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false as const, canceled: true as const }
+    }
+
+    const resourceDir = join(projectDir, 'rc')
+    if (!existsSync(resourceDir)) {
+      mkdirSync(resourceDir, { recursive: true })
+    }
+
+    const srcPath = result.filePaths[0]
+    const srcName = basename(srcPath)
+    const ext = extname(srcName)
+    const stem = ext ? srcName.slice(0, -ext.length) : srcName
+    let targetName = srcName
+    let idx = 1
+    while (existsSync(join(resourceDir, targetName))) {
+      targetName = `${stem}_${idx}${ext}`
+      idx++
+    }
+
+    try {
+      const targetPath = join(resourceDir, targetName)
+      copyFileSync(srcPath, targetPath)
+
+      const eppFiles = readdirSync(projectDir).filter(f => f.endsWith('.epp'))
+      if (eppFiles.length > 0) {
+        const eppPath = join(projectDir, eppFiles[0])
+        let eppContent = readFileSync(eppPath, 'utf-8')
+        const escaped = targetName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const existed = new RegExp(`^File=[^|]+\\|${escaped}\\|\\d+$`, 'm').test(eppContent)
+        if (!existed) {
+          eppContent = eppContent.trimEnd() + `\nFile=RES|${targetName}|0\n`
+          writeFileSync(eppPath, eppContent, 'utf-8')
+        }
+      }
+
+      return { success: true as const, fileName: targetName }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return { success: false as const, canceled: false as const, message }
+    }
+  })
+
+  // 获取资源预览数据（可选 base64），避免渲染进程直接 file:// 读取失败
+  ipcMain.handle('project:getResourcePreviewData', (_event, projectDir: string, fileName: string, withContent = true) => {
+    if (!projectDir || !fileName) {
+      return { success: false as const, message: '无效参数' }
+    }
+
+    const filePath = (() => {
+      const rcPath = join(projectDir, 'rc', fileName)
+      if (existsSync(rcPath)) return rcPath
+      const legacyPath = join(projectDir, fileName)
+      if (existsSync(legacyPath)) return legacyPath
+      return ''
+    })()
+
+    if (!filePath) {
+      return { success: false as const, message: '资源文件不存在' }
+    }
+
+    let stat
+    try {
+      stat = statSync(filePath)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return { success: false as const, message }
+    }
+
+    const ext = (extname(fileName) || '').toLowerCase().replace('.', '')
+    const mimeMap: Record<string, string> = {
+      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', bmp: 'image/bmp', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', ico: 'image/x-icon',
+      mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', aac: 'audio/aac', m4a: 'audio/mp4', flac: 'audio/flac',
+      mp4: 'video/mp4', webm: 'video/webm', ogv: 'video/ogg', mov: 'video/quicktime', avi: 'video/x-msvideo', mkv: 'video/x-matroska',
+    }
+    const mime = mimeMap[ext] || 'application/octet-stream'
+
+    if (!withContent) {
+      return {
+        success: true as const,
+        mime,
+        ext,
+        filePath,
+        sizeBytes: stat.size,
+        modifiedAtMs: stat.mtimeMs,
+      }
+    }
+
+    try {
+      const buf = readFileSync(filePath)
+      return {
+        success: true as const,
+        mime,
+        ext,
+        filePath,
+        sizeBytes: stat.size,
+        modifiedAtMs: stat.mtimeMs,
+        base64: buf.toString('base64'),
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      return { success: false as const, message }
+    }
   })
 
   // 支持库 IPC
