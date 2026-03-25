@@ -47,6 +47,8 @@ interface CellData {
 // ========== 运算符格式化 ==========
 
 function formatOps(val: string): string {
+  // 统一字符串引号风格，便于失焦后呈现易语言常见样式
+  val = val.replace(/"([^"\r\n]*)"/g, '“$1”')
   const strPlaceholders: string[] = []
   let s = val.replace(/["“](.*?)["”]/g, (m) => {
     strPlaceholders.push(m)
@@ -1193,6 +1195,14 @@ function getMissingAssignmentRhsTarget(rawLine: string): string | null {
   return m ? m[1] : null
 }
 
+function isKnownAssignmentTarget(target: string, knownVars: Set<string>): boolean {
+  const normalized = (target || '').trim().replace(MEMBER_DELIMITER_REGEX, '.')
+  if (!normalized) return false
+  const base = normalized.split('.')[0]?.trim() || ''
+  if (!base) return false
+  return knownVars.has(base)
+}
+
 function isValidVariableLikeName(name: string): boolean {
   return /^[\u4e00-\u9fa5A-Za-z_]/.test(name.trim())
 }
@@ -1351,6 +1361,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
   const commitGuardRef = useRef(false) // 防止 commit 被重复调用（mousedown + blur-on-unmount）
   const editCellOrigValRef = useRef<string>('') // 表格单元格编辑前的原始值（liveUpdate 会实时更新 lines，需保存原始值用于重命名比较）
   const [expandedLines, setExpandedLines] = useState<Set<number>>(new Set())
+  const [expandedAssignRhsParamLines, setExpandedAssignRhsParamLines] = useState<Set<number>>(new Set())
   const isResourceTableDoc = docLanguage === 'erc'
   const [resourcePreview, setResourcePreview] = useState<{
     visible: boolean
@@ -1400,7 +1411,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
   const isDragging = useRef(false)
   const dragStartPos = useRef<{ x: number; y: number } | null>(null)
   const wasDragSelect = useRef(false)
-  const pendingInputDragRef = useRef<{ lineIndex: number; x: number; y: number } | null>(null)
+  const pendingInputDragRef = useRef<{ lineIndex: number; x: number; y: number; allowRowDrag: boolean } | null>(null)
 
   // ===== 撤销/重做栈 =====
   const undoStack = useRef<string[]>([])
@@ -1467,6 +1478,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     const onMove = (e: MouseEvent): void => {
       if (!isDragging.current && pendingInputDragRef.current) {
         const p = pendingInputDragRef.current
+        if (!p.allowRowDrag) return
         // 判断鼠标是否已离开 input 元素边界
         const inputEl = inputRef.current
         if (inputEl) {
@@ -1892,6 +1904,24 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     const isTypeCellEdit = editCell.cellIndex >= 0 && canUseTypeCompletion(editCell.lineIndex, editCell.fieldIdx)
     if (!isCodeEdit && !isTypeCellEdit) { setAcVisible(false); return }
 
+    // 引号内是自由文本输入，不弹补全窗（支持英文/中文引号）
+    let inAsciiQuote = false
+    let inCnQuote = false
+    for (let i = 0; i < cursorPos; i++) {
+      const ch = val[i]
+      if (inAsciiQuote) {
+        if (ch === '"' && val[i - 1] !== '\\') inAsciiQuote = false
+        continue
+      }
+      if (inCnQuote) {
+        if (ch === '”') inCnQuote = false
+        continue
+      }
+      if (ch === '"') inAsciiQuote = true
+      else if (ch === '“') inCnQuote = true
+    }
+    if (inAsciiQuote || inCnQuote) { setAcVisible(false); return }
+
     // 向前找当前输入词的起始位置（中文/英文/下划线连续字符）
     let wordStart = cursorPos
     while (wordStart > 0 && /[\u4e00-\u9fa5A-Za-z0-9_]/.test(val[wordStart - 1])) wordStart--
@@ -2114,7 +2144,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
 
     // 赋值表达式：identifier = expr → 格式化运算符
     const assignM = trimmed.match(/^([\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_.]*)\s*(?:=(?!=)|＝)/)
-    if (assignM && userVarNamesRef.current.has(assignM[1])) {
+    if (assignM && isKnownAssignmentTarget(assignM[1], userVarNamesRef.current)) {
       const indentLen = val.length - trimmed.length
       return [val.slice(0, indentLen) + formatOps(trimmed)]
     }
@@ -2134,20 +2164,12 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       if (dotIndex >= 0) {
         const objPrefix = normalizedToken.slice(0, dotIndex + 1)
         const memberName = normalizedToken.slice(dotIndex + 1)
-        const cmd = allCmdPool.find(c => c.name === memberName) || null
-        if (cmd && cmd.englishName && cmd.englishName.trim()) {
-          const english = cmd.englishName.trim()
-          return { normalizedToken: objPrefix + english, lookupName: english, command: cmd }
-        }
-        return { normalizedToken, lookupName: memberName, command: cmd }
+        const cmd = allCmdPool.find(c => c.name === memberName || ((c.englishName || '').trim() === memberName)) || null
+        return { normalizedToken, lookupName: cmd?.name || memberName, command: cmd }
       }
 
-      const cmd = allCmdPool.find(c => c.name === normalizedToken) || null
-      if (cmd && cmd.englishName && cmd.englishName.trim() && !FLOW_KW.has(normalizedToken)) {
-        const english = cmd.englishName.trim()
-        return { normalizedToken: english, lookupName: english, command: cmd }
-      }
-      return { normalizedToken, lookupName: normalizedToken, command: cmd }
+      const cmd = allCmdPool.find(c => c.name === normalizedToken || ((c.englishName || '').trim() === normalizedToken)) || null
+      return { normalizedToken, lookupName: cmd?.name || normalizedToken, command: cmd }
     }
 
     // 提取命令名（支持“命令名”或“命令名 (...)”两种输入）
@@ -2716,7 +2738,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
           if (s.cls === 'funccolor' && !validCommandNames.has(s.text)) {
             problems.push({ line: blk.lineIndex + 1, column: col, message: `未知命令"${s.text}"`, severity: 'error' })
           }
-          if (s.cls === 'assignTarget' && !allKnownVarNames.has(s.text)) {
+          if (s.cls === 'assignTarget' && !isKnownAssignmentTarget(s.text, allKnownVarNames)) {
             problems.push({ line: blk.lineIndex + 1, column: col, message: `未知变量"${s.text}"`, severity: 'error' })
           }
           col += s.text.length
@@ -2837,15 +2859,47 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       }
     }
 
-    // 参数值编辑
-    if (editCell.paramIdx !== undefined && editCell.paramIdx >= 0) {
-      const codeLine = lines[editCell.lineIndex]
-      const formattedVal = formatParamOperators(effectiveVal)
-      const newLine = replaceCallArg(codeLine, editCell.paramIdx, formattedVal)
-      const nl = [...lines]; nl[editCell.lineIndex] = newLine
-      const nt = nl.join('\n')
-      setCurrentText(nt); prevRef.current = nt; onChange(nt); setEditCell(null)
-      return
+    // 参数值编辑 / 赋值语句右值编辑
+    if (editCell.paramIdx !== undefined) {
+      if (editCell.paramIdx >= 0) {
+        const codeLine = lines[editCell.lineIndex]
+        const formattedVal = formatParamOperators(effectiveVal)
+        const newLine = replaceCallArg(codeLine, editCell.paramIdx, formattedVal)
+        const nl = [...lines]; nl[editCell.lineIndex] = newLine
+        const nt = nl.join('\n')
+        setCurrentText(nt); prevRef.current = nt; onChange(nt); setEditCell(null)
+        return
+      }
+      if (editCell.paramIdx === -100) {
+        const codeLine = lines[editCell.lineIndex] || ''
+        const parsed = parseAssignmentLineParts(codeLine)
+        if (!parsed) {
+          setEditCell(null)
+          return
+        }
+        const formattedVal = formatParamOperators(effectiveVal)
+        const newLine = `${parsed.indent}${parsed.lhs} ＝ ${formattedVal}`
+        const nl = [...lines]; nl[editCell.lineIndex] = newLine
+        const nt = nl.join('\n')
+        setCurrentText(nt); prevRef.current = nt; onChange(nt); setEditCell(null)
+        return
+      }
+      if (editCell.paramIdx <= -200) {
+        const codeLine = lines[editCell.lineIndex] || ''
+        const parsed = parseAssignmentLineParts(codeLine)
+        if (!parsed) {
+          setEditCell(null)
+          return
+        }
+        const rhsParamIdx = -editCell.paramIdx - 200
+        const formattedVal = formatParamOperators(effectiveVal)
+        const newRhs = replaceCallArg(parsed.rhs, rhsParamIdx, formattedVal)
+        const newLine = `${parsed.indent}${parsed.lhs} ＝ ${newRhs}`
+        const nl = [...lines]; nl[editCell.lineIndex] = newLine
+        const nt = nl.join('\n')
+        setCurrentText(nt); prevRef.current = nt; onChange(nt); setEditCell(null)
+        return
+      }
     }
 
     if (editCell.cellIndex < 0) {
@@ -3425,6 +3479,13 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
         if (e.key === 'Enter') {
           e.preventDefault()
           setAcVisible(false)
+          if (expandedLines.has(editCell.lineIndex)) {
+            setExpandedLines(prev => {
+              const next = new Set(prev)
+              next.delete(editCell.lineIndex)
+              return next
+            })
+          }
           const cursorAtStart = cur === 0
           // commit 会清除 flowMarkRef，需提前保存
           const savedFlowMark = flowMarkRef.current
@@ -3515,6 +3576,13 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     if (e.key === 'Enter') {
       e.preventDefault()
       setAcVisible(false)
+      if (editCell && editCell.cellIndex < 0 && expandedLines.has(editCell.lineIndex)) {
+        setExpandedLines(prev => {
+          const next = new Set(prev)
+          next.delete(editCell.lineIndex)
+          return next
+        })
+      }
       if (editCell && editCell.cellIndex < 0) {
         const cur = e.currentTarget
         const pos = cur.selectionStart ?? editVal.length
@@ -4000,7 +4068,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
         }
       }
     }
-  }, [commit, editCell, editVal, lines, onChange, acVisible, acItems, acIndex, applyCompletion, currentText, pushUndo, startEditLine])
+  }, [commit, editCell, editVal, lines, onChange, acVisible, acItems, acIndex, applyCompletion, currentText, pushUndo, startEditLine, expandedLines])
 
   // 插入子程序：在当前光标所处子程序后方插入，无光标时插入到末尾
   useImperativeHandle(ref, () => ({
@@ -4259,6 +4327,41 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     return null
   }, [])
 
+  /** 识别赋值语句并提取左值/右值（支持对象成员写法） */
+  const parseAssignmentDetail = useCallback((codeLine: string): { target: string; value: string } | null => {
+    if (!codeLine) return null
+    const trimmed = codeLine.replace(FLOW_AUTO_TAG, '').trim()
+    if (!trimmed || trimmed.startsWith('.')) return null
+    const m = /^([\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_.。．]*)\s*(?:=|＝)\s*(.+)$/.exec(trimmed)
+    if (!m) return null
+    const target = (m[1] || '').trim()
+    const value = (m[2] || '').trim()
+    if (!target || !value) return null
+    return { target, value }
+  }, [])
+
+  const parseAssignmentLineParts = useCallback((codeLine: string): { indent: string; lhs: string; rhs: string } | null => {
+    if (!codeLine) return null
+    const m = /^(\s*[\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_.。．]*)\s*(?:=|＝)\s*(.*)$/.exec(codeLine)
+    if (!m) return null
+    const lhsRaw = m[1] || ''
+    const rhs = (m[2] || '').trim()
+    const indentLen = lhsRaw.length - lhsRaw.trimStart().length
+    return {
+      indent: lhsRaw.slice(0, indentLen),
+      lhs: lhsRaw.trim(),
+      rhs,
+    }
+  }, [])
+
+  const isQuotedTextLiteral = useCallback((text: string): boolean => {
+    const t = (text || '').trim()
+    if (!t) return false
+    const isAsciiQuoted = t.length >= 2 && t.startsWith('"') && t.endsWith('"')
+    const isCnQuoted = t.length >= 2 && t.startsWith('“') && t.endsWith('”')
+    return isAsciiQuoted || isCnQuoted
+  }, [])
+
   /** 从代码行中提取括号内的实际参数值列表 */
   const parseCallArgs = useCallback((codeLine: string): string[] => {
     // 找到第一个 ( 或 （
@@ -4351,13 +4454,27 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     if (!editCell) return
 
     // 参数值编辑
-    if (editCell.paramIdx !== undefined && editCell.paramIdx >= 0) {
-      const codeLine = lines[editCell.lineIndex]
-      const newLine = replaceCallArg(codeLine, editCell.paramIdx, val)
-      const nl = [...lines]; nl[editCell.lineIndex] = newLine
-      const nt = nl.join('\n')
-      setCurrentText(nt); prevRef.current = nt; onChange(nt)
-      return
+    if (editCell.paramIdx !== undefined) {
+      if (editCell.paramIdx >= 0) {
+        const codeLine = lines[editCell.lineIndex]
+        const newLine = replaceCallArg(codeLine, editCell.paramIdx, val)
+        const nl = [...lines]; nl[editCell.lineIndex] = newLine
+        const nt = nl.join('\n')
+        setCurrentText(nt); prevRef.current = nt; onChange(nt)
+        return
+      }
+      if (editCell.paramIdx <= -200) {
+        const codeLine = lines[editCell.lineIndex] || ''
+        const parsed = parseAssignmentLineParts(codeLine)
+        if (!parsed) return
+        const rhsParamIdx = -editCell.paramIdx - 200
+        const newRhs = replaceCallArg(parsed.rhs, rhsParamIdx, val)
+        const newLine = `${parsed.indent}${parsed.lhs} ＝ ${newRhs}`
+        const nl = [...lines]; nl[editCell.lineIndex] = newLine
+        const nt = nl.join('\n')
+        setCurrentText(nt); prevRef.current = nt; onChange(nt)
+        return
+      }
     }
 
     if (editCell.cellIndex < 0) {
@@ -4376,7 +4493,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     const nl = [...lines]; nl[editCell.lineIndex] = newLine
     const nt = nl.join('\n')
     setCurrentText(nt); prevRef.current = nt; onChange(nt)
-  }, [editCell, lines, onChange, replaceCallArg])
+  }, [editCell, lines, onChange, replaceCallArg, parseAssignmentLineParts])
 
   /** 渲染某行的流程线段 */
   const renderFlowSegs = (lineIndex: number, isExpanded?: boolean): { node: React.ReactNode; skipTreeLines: number } => {
@@ -4599,6 +4716,10 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                           className={`${cell.cls} Rowheight${isInvalidVarNameCell ? ' eyc-cell-invalid' : ''}`}
                           colSpan={cell.colSpan}
                           style={cell.align ? { textAlign: cell.align as 'center' } : undefined}
+                          onMouseDown={(e) => {
+                            // 单元格点击/拖选优先走单元格逻辑，不触发行级选择
+                            e.stopPropagation()
+                          }}
                           onClick={(e) => {
                             e.stopPropagation()
                             if (row.isHeader) return
@@ -4628,8 +4749,8 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                                 value={editVal}
                                 onMouseDown={(e) => {
                                   if (e.button !== 0) return
-                                  // 记录起始位置；如果鼠标拖出 input 边界则切换为跳行拖选
-                                  pendingInputDragRef.current = { lineIndex: row.lineIndex, x: e.clientX, y: e.clientY }
+                                  // 单元格输入框内拖选仅限单元格，不切换到行拖选
+                                  pendingInputDragRef.current = { lineIndex: row.lineIndex, x: e.clientX, y: e.clientY, allowRowDrag: false }
                                 }}
                                 onChange={e => {
                                   const v = e.target.value
@@ -4665,6 +4786,8 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
           const isAutoFlowLine = !blk.isVirtual && codeLineRaw.includes(FLOW_AUTO_TAG) && !isLoopEnd
           const spans = colorize((blk.codeLine || '').replace(FLOW_AUTO_TAG, ''))
           const lineCmd = blk.isVirtual ? null : findCmdWithParams((blk.codeLine || '').replace(FLOW_AUTO_TAG, ''))
+          const assignDetail = blk.isVirtual ? null : parseAssignmentDetail((blk.codeLine || '').replace(FLOW_AUTO_TAG, ''))
+          const hasExpandableDetail = !!lineCmd || !!assignDetail
           const isExpanded = expandedLines.has(blk.lineIndex)
           const isLineSelected = selectedLines.has(blk.lineIndex)
           return (
@@ -4678,7 +4801,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                 <div className="eyc-gutter-cell">
                   <span className="eyc-gutter-linenum">{blk.isVirtual ? '' : (lineNumMaps.codeLineNumMap.get(blk.lineIndex) ?? blk.lineIndex + 1)}</span>
                   <span className="eyc-gutter-fold-area">
-                    {lineCmd && (isLineSelected || (editCell && editCell.lineIndex === blk.lineIndex && editCell.paramIdx === undefined)) && (
+                    {hasExpandableDetail && (isLineSelected || (editCell && editCell.lineIndex === blk.lineIndex && editCell.paramIdx === undefined)) && (
                       <span
                         className="eyc-gutter-fold"
                         onMouseDown={(e) => { e.stopPropagation(); e.preventDefault() }}
@@ -4727,7 +4850,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                     onMouseDown={(e) => {
                       if (e.button !== 0) return
                       // 记录起始位置；如果鼠标拖出 input 边界则切换为跳行拖选
-                      pendingInputDragRef.current = { lineIndex: blk.lineIndex, x: e.clientX, y: e.clientY }
+                      pendingInputDragRef.current = { lineIndex: blk.lineIndex, x: e.clientX, y: e.clientY, allowRowDrag: true }
                     }}
                     onChange={e => {
                       const v = e.target.value
@@ -4773,7 +4896,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                           const isFlowKw = s.cls === 'comecolor'
                           const isUserSubRef = isFunc && userSubNamesRef.current.has(s.text)
                           const isAssignTarget = s.cls === 'assignTarget'
-                          const isInvalid = (isFunc && !validCommandNames.has(s.text)) || (isAssignTarget && !allKnownVarNames.has(s.text))
+                          const isInvalid = (isFunc && !validCommandNames.has(s.text)) || (isAssignTarget && !isKnownAssignmentTarget(s.text, allKnownVarNames))
                           const isLineSyntaxInvalid = lineHasMissingRhs && (isAssignTarget || (!isFunc && !isObjMethod && !isFlowKw && s.text.trim() !== ''))
                           if (isFunc || isObjMethod || isFlowKw || isAssignTarget) {
                             return (
@@ -4847,6 +4970,124 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
                           </div>
                         )
                       })}
+                    </div>
+                  </div>
+                )
+              })()}
+              {!lineCmd && assignDetail && isExpanded && (() => {
+                const codeLine = (blk.codeLine || '').replace(FLOW_AUTO_TAG, '')
+                const leadingSpaces = codeLine.length - codeLine.replace(/^ +/, '').length
+                const baseLeft = 80 + 8
+                const indentCh = leadingSpaces + 1.5
+                const arrowLeftStyle = `calc(${baseLeft}px + ${indentCh}ch)`
+                const expandPadding = `calc(${baseLeft + 20}px + ${leadingSpaces}ch)`
+                const isEditingAssignValue = editCell && editCell.lineIndex === blk.lineIndex && editCell.paramIdx === -100
+                const assignValueCmd = findCmdWithParams(assignDetail.value || '')
+                const assignValueArgVals = assignValueCmd ? parseCallArgs(assignDetail.value || '') : []
+                const isAssignValueCmdExpanded = expandedAssignRhsParamLines.has(blk.lineIndex)
+                const showAssignValueFold = !!assignValueCmd && assignValueCmd.params.length > 0 && (isLineSelected || !!(editCell && editCell.lineIndex === blk.lineIndex))
+                return (
+                  <div className="eyc-param-expand" style={{ paddingLeft: expandPadding }}>
+                    {showAssignValueFold && (
+                      <span className="eyc-param-expand-gutter-fold-area">
+                        <span
+                          className="eyc-gutter-fold"
+                          onMouseDown={(e) => { e.stopPropagation(); e.preventDefault() }}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setExpandedAssignRhsParamLines(prev => {
+                              const next = new Set(prev)
+                              if (next.has(blk.lineIndex)) next.delete(blk.lineIndex)
+                              else next.add(blk.lineIndex)
+                              return next
+                            })
+                          }}
+                        >{isAssignValueCmdExpanded ? '−' : '+'}</span>
+                      </span>
+                    )}
+                    {renderFlowContinuation(blk.lineIndex)}
+                    <span className="eyc-param-expand-arrow" style={{ left: arrowLeftStyle }} />
+                    <div className="eyc-param-expand-inner" style={{ '--vline-offset': 'calc(-20px + 1.5ch)' } as React.CSSProperties}>
+                      <div className="eyc-param-expand-row">
+                        <span className="eyc-param-expand-mark">※</span>
+                        <span className="eyc-param-expand-name">被赋值的变量或变量数组</span>
+                        <span className="eyc-param-expand-colon">：</span>
+                        <span className="eyc-param-expand-val">{assignDetail.target || '\u00A0'}</span>
+                      </div>
+                      <div className="eyc-param-expand-row eyc-param-expand-row-assign-value" onClick={isEditingAssignValue ? undefined : (e) => {
+                        e.stopPropagation()
+                        setEditCell({ lineIndex: blk.lineIndex, cellIndex: -2, fieldIdx: -1, sliceField: false, paramIdx: -100 })
+                        setEditVal(assignDetail.value || '')
+                        setTimeout(() => paramInputRef.current?.focus(), 0)
+                      }} style={{ cursor: isEditingAssignValue ? undefined : 'text' }}>
+                        <span className="eyc-param-expand-mark">※</span>
+                        <span className="eyc-param-expand-name">用作赋予的值或资源</span>
+                        <span className="eyc-param-expand-colon">：</span>
+                        {isEditingAssignValue ? (
+                          <input
+                            ref={paramInputRef}
+                            className="eyc-param-val-input"
+                            value={editVal}
+                            onChange={e => { setEditVal(e.target.value); liveUpdate(e.target.value) }}
+                            onBlur={() => commit()}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') { e.preventDefault(); commit() }
+                              else if (e.key === 'Escape') setEditCell(null)
+                            }}
+                            spellCheck={false}
+                          />
+                        ) : (
+                          <span className={`eyc-param-expand-val${isQuotedTextLiteral(assignDetail.value) ? ' eTxtcolor' : ''}`}>{assignDetail.value || '\u00A0'}</span>
+                        )}
+                      </div>
+                      {assignValueCmd && isAssignValueCmdExpanded && (
+                        <div className="eyc-param-expand-secondary">
+                          <span className="eyc-param-expand-arrow eyc-param-expand-arrow-secondary" />
+                          {assignValueCmd.params.map((p, pi) => {
+                            const assignParamEditIdx = -200 - pi
+                            const isEditingAssignCmdParam = editCell && editCell.lineIndex === blk.lineIndex && editCell.paramIdx === assignParamEditIdx
+                            return (
+                              <div
+                                key={`assign-param-${pi}`}
+                                className="eyc-param-expand-row eyc-param-expand-row-secondary"
+                                onClick={isEditingAssignCmdParam ? undefined : (e) => {
+                                  e.stopPropagation()
+                                  const cmdName = findFirstCommandName(assignDetail.value || '')
+                                  if (cmdName) {
+                                    const ownerAssembly = findOwnerAssemblyName(blk.lineIndex)
+                                    const hintName = userSubNamesRef.current.has(cmdName) ? `__SUB__:${cmdName}:${ownerAssembly}` : cmdName
+                                    onCommandClick?.(hintName, pi)
+                                  }
+                                  setEditCell({ lineIndex: blk.lineIndex, cellIndex: -2, fieldIdx: -1, sliceField: false, paramIdx: assignParamEditIdx })
+                                  setEditVal(assignValueArgVals[pi] !== undefined ? assignValueArgVals[pi] : '')
+                                  setTimeout(() => paramInputRef.current?.focus(), 0)
+                                }}
+                                style={{ cursor: isEditingAssignCmdParam ? undefined : 'text' }}
+                              >
+                                <span className="eyc-param-expand-mark">※</span>
+                                <span className="eyc-param-expand-name">{p.name}</span>
+                                <span className="eyc-param-expand-colon">：</span>
+                                {isEditingAssignCmdParam ? (
+                                  <input
+                                    ref={paramInputRef}
+                                    className="eyc-param-val-input"
+                                    value={editVal}
+                                    onChange={e => { setEditVal(e.target.value); liveUpdate(e.target.value) }}
+                                    onBlur={() => commit()}
+                                    onKeyDown={e => {
+                                      if (e.key === 'Enter') { e.preventDefault(); commit() }
+                                      else if (e.key === 'Escape') setEditCell(null)
+                                    }}
+                                    spellCheck={false}
+                                  />
+                                ) : (
+                                  <span className="eyc-param-expand-val">{assignValueArgVals[pi] !== undefined ? assignValueArgVals[pi] : '\u00A0'}</span>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
                     </div>
                   </div>
                 )

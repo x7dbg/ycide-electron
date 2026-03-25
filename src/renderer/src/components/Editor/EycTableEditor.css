@@ -486,6 +486,16 @@
   width: 100%;
   position: relative;
 }
+.eyc-param-expand-gutter-fold-area {
+  position: absolute;
+  left: 54px;
+  top: 24px;
+  width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
 /* 参数展开区域的流程线延续容器 */
 .eyc-param-flow-cont {
   position: absolute;
@@ -539,6 +549,21 @@
   padding: 1px 0;
   line-height: 20px;
   position: relative;
+}
+.eyc-param-expand-secondary {
+  position: relative;
+  padding-left: 20px;
+}
+.eyc-param-expand-row-secondary {
+  margin-left: 2px;
+}
+.eyc-param-expand-row-assign-value::after {
+  bottom: 50%;
+}
+.eyc-param-expand-arrow-secondary {
+  left: calc(var(--vline-offset, -8px) + 22px - 5px);
+  top: -6px;
+  transform: none;
 }
 /* 从※左边延伸到垂直虚线位置的水平虚线 */
 .eyc-param-expand-row::before {

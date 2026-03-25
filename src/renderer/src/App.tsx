@@ -854,6 +854,12 @@ function App(): React.JSX.Element {
         handleStop()
         break
 
+      // 查看/工具菜单
+      case 'view:library':
+      case 'tools:library':
+        setShowLibrary(true)
+        break
+
       // 插入菜单
       case 'insert:sub':
         editorRef.current?.insertDeclaration()

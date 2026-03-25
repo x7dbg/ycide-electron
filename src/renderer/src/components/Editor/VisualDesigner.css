@@ -35,10 +35,10 @@
 
 /* 图标模式下宽度更窄 */
 .vd-toolbox.vd-toolbox-icon-mode {
-  width: 42px;
+  width: 130px;
 }
 .vd-toolbox.vd-toolbox-icon-mode.vd-toolbox-float {
-  width: 48px;
+  min-width: 86px;
 }
 
 .vd-toolbox-header {
@@ -123,6 +123,15 @@
   overflow-x: hidden;
 }
 
+.vd-toolbox-icon-mode .vd-toolbox-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 4px;
+}
+
 .vd-tool-item {
   display: flex;
   align-items: center;
@@ -139,9 +148,15 @@
 }
 .vd-toolbox-icon-mode .vd-tool-item {
   justify-content: center;
-  padding: 6px 4px;
+  padding: 6px 0;
   flex-direction: column;
   gap: 0;
+  width: 34px;
+  min-width: 34px;
+  flex: 0 0 34px;
+  border-left: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
 }
 .vd-tool-item:hover {
   background: var(--bg-hover);
@@ -151,6 +166,11 @@
   background: var(--bg-active);
   color: var(--accent);
   border-left-color: var(--accent);
+}
+
+.vd-toolbox-icon-mode .vd-tool-item.active {
+  border-left-color: transparent;
+  border-color: var(--accent);
 }
 
 .vd-tool-icon {

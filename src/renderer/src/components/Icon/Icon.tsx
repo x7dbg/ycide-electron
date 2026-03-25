@@ -172,6 +172,8 @@ export const ICON_MAP: Record<string, string> = {
 /** Adapt light-theme SVG for dark theme  */
 function adaptForDarkTheme(raw: string): string {
   return raw
+    // Remove embedded SVG title tooltip text; UI-level button title/aria-label should be authoritative.
+    .replace(/<title[\s\S]*?<\/title>/gi, '')
     // Replace light-theme default grey (#212121) with light grey
     .replace(/fill:\s*#212121/g, 'fill: #cccccc')
     // Replace light-theme blue (#005dba) with brighter blue

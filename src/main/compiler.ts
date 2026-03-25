@@ -44,6 +44,7 @@ interface WindowControlInfo {
 
 // 窗口文件信息
 interface WindowFileInfo {
+  formName: string
   width: number
   height: number
   title: string
@@ -161,6 +162,32 @@ function sendMessage(msg: CompileMessage): void {
   BrowserWindow.getAllWindows().forEach(w => {
     w.webContents.send('compiler:output', msg)
   })
+}
+
+function localizeCompilerMessage(line: string): string {
+  let text = line.trimEnd()
+  if (!text) return text
+
+  const undefSymbol = text.match(/^lld-link:\s*error:\s*undefined symbol:\s*(.+)$/i)
+  if (undefSymbol) {
+    return `链接器错误: 未定义符号: ${undefSymbol[1]}`
+  }
+
+  const linkerFail = text.match(/^clang:\s*error:\s*linker command failed with exit code\s+(\d+)\s*\(use -v to see invocation\)$/i)
+  if (linkerFail) {
+    return `编译器错误: 链接命令失败，退出码 ${linkerFail[1]}（使用 -v 可查看调用详情）`
+  }
+
+  const referencedBy = text.match(/^>>>\s*referenced by\s+(.+)$/i)
+  if (referencedBy) {
+    return `>>> 引用位置: ${referencedBy[1]}`
+  }
+
+  text = text.replace(/^lld-link:\s*error:\s*/i, '链接器错误: ')
+  text = text.replace(/^lld-link:\s*warning:\s*/i, '链接器警告: ')
+  text = text.replace(/^clang:\s*error:\s*/i, '编译器错误: ')
+  text = text.replace(/^clang:\s*warning:\s*/i, '编译器警告: ')
+  return text
 }
 
 // 获取应用目录（开发模式下是项目根目录）
@@ -667,10 +694,12 @@ function resolveControlStyle(ctrlType: string, unit: LibWindowUnit | undefined, 
 
 // 解析窗口文件
 function parseWindowFile(efwPath: string): WindowFileInfo {
-  const info: WindowFileInfo = { width: 592, height: 384, title: '窗口', visible: true, disabled: false, border: 2, maxButton: true, minButton: true, controlBox: true, topmost: false, startPos: 1, controls: [] }
+  const defaultFormName = basename(efwPath, '.efw') || '_启动窗口'
+  const info: WindowFileInfo = { formName: defaultFormName, width: 592, height: 384, title: '窗口', visible: true, disabled: false, border: 2, maxButton: true, minButton: true, controlBox: true, topmost: false, startPos: 1, controls: [] }
   if (!existsSync(efwPath)) return info
   try {
     const data = JSON.parse(readFileSync(efwPath, 'utf-8'))
+    info.formName = (data.name || data.formName || defaultFormName || '_启动窗口')
     info.width = data.formWidth || data.width || 592
     info.height = data.formHeight || data.height || 384
     info.title = data.formTitle || data.title || data.name || '窗口'
@@ -846,6 +875,16 @@ function collectUsedLibraryFileNames(project: ProjectInfo, editorFiles?: Map<str
         continue
       }
 
+      // 赋值右值中的命令调用：例如 test = 取本机名()
+      const assignMatch = line.match(/^[\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_.]*\s*[＝=]\s*(.+)$/)
+      if (assignMatch) {
+        const rhsCall = parseCommandCall(assignMatch[1].trim())
+        if (rhsCall?.name) {
+          const rhsResolved = commandMap.get(rhsCall.name)
+          if (rhsResolved?.libraryFileName) used.add(rhsResolved.libraryFileName)
+        }
+      }
+
       const callableLine = line.startsWith('.') ? line.substring(1).trim() : line
       if (!callableLine) continue
       const cmdName = extractCommandName(callableLine)
@@ -889,6 +928,120 @@ function collectUsedLibraryFileNames(project: ProjectInfo, editorFiles?: Map<str
   }
 
   return used
+}
+
+function collectGenericFallbackLibraryFileNames(project: ProjectInfo, editorFiles?: Map<string, string>): Set<string> {
+  const used = new Set<string>()
+  const commandMap = buildCommandMap()
+  const protocols = loadCompileProtocols()
+
+  const markIfGenericFallback = (call: { name: string; args: string[] } | null): void => {
+    if (!call?.name) return
+    const resolved = commandMap.get(call.name)
+    if (!resolved?.libraryFileName) return
+    const protocolCode = resolveCommandByProtocol(
+      protocols.commands,
+      resolved.libraryFileName,
+      resolved.name,
+      resolved.englishName,
+      call.args || [],
+    )
+    if (protocolCode) return
+    if (COMMAND_CODE_GENERATORS[resolved.name]) return
+    if (COMMAND_EXPR_GENERATORS[resolved.name]) return
+    used.add(resolved.libraryFileName)
+  }
+
+  for (const f of project.files) {
+    if (f.type !== 'EYC' && f.type !== 'EGV' && f.type !== 'ECS' && f.type !== 'EDT' && f.type !== 'ELL') continue
+    const sourcePath = join(project.projectDir, f.fileName)
+    const editorContent = editorFiles?.get(f.fileName)
+    const content = editorContent || (existsSync(sourcePath) ? readFileSync(sourcePath, 'utf-8') : '')
+    if (!content) continue
+
+    const lines = content.split('\n')
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/[\u200B\u200C\u200D\u2060]/g, '').trim()
+      if (!line || line.startsWith("'")) continue
+      if (
+        line.startsWith('.版本') ||
+        line.startsWith('.程序集') ||
+        line.startsWith('.参数 ') ||
+        line.startsWith('.全局变量 ') ||
+        line.startsWith('.局部变量 ') ||
+        line.startsWith('.常量 ') ||
+        line.startsWith('.数据类型 ') ||
+        line.startsWith('.成员 ') ||
+        line.startsWith('.支持库 ')
+      ) {
+        continue
+      }
+
+      const assignMatch = line.match(/^[\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_.]*\s*[＝=]\s*(.+)$/)
+      if (assignMatch) {
+        markIfGenericFallback(parseCommandCall(assignMatch[1].trim()))
+      }
+
+      const callableLine = line.startsWith('.') ? line.substring(1).trim() : line
+      if (!callableLine) continue
+      markIfGenericFallback(parseCommandCall(callableLine))
+    }
+  }
+
+  return used
+}
+
+interface CommandSourceLocation {
+  fileName: string
+  lineNo: number
+  commandName: string
+}
+
+function collectCommandSourceLocationsByLibrary(project: ProjectInfo, editorFiles?: Map<string, string>): Map<string, CommandSourceLocation[]> {
+  const byLib = new Map<string, CommandSourceLocation[]>()
+  const seen = new Set<string>()
+  const commandMap = buildCommandMap()
+
+  const addLocation = (libFileName: string, fileName: string, lineNo: number, commandName: string): void => {
+    const key = `${libFileName}|${fileName}|${lineNo}|${commandName}`
+    if (seen.has(key)) return
+    seen.add(key)
+    if (!byLib.has(libFileName)) byLib.set(libFileName, [])
+    byLib.get(libFileName)!.push({ fileName, lineNo, commandName })
+  }
+
+  const markCall = (fileName: string, lineNo: number, call: { name: string; args: string[] } | null): void => {
+    if (!call?.name) return
+    const resolved = commandMap.get(call.name)
+    if (!resolved?.libraryFileName) return
+    addLocation(resolved.libraryFileName, fileName, lineNo, resolved.name)
+  }
+
+  for (const f of project.files) {
+    if (f.type !== 'EYC' && f.type !== 'EGV' && f.type !== 'ECS' && f.type !== 'EDT' && f.type !== 'ELL') continue
+    const sourcePath = join(project.projectDir, f.fileName)
+    const editorContent = editorFiles?.get(f.fileName)
+    const content = editorContent || (existsSync(sourcePath) ? readFileSync(sourcePath, 'utf-8') : '')
+    if (!content) continue
+
+    const lines = content.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const lineNo = i + 1
+      const line = lines[i].replace(/[\u200B\u200C\u200D\u2060]/g, '').trim()
+      if (!line || line.startsWith("'")) continue
+
+      const assignMatch = line.match(/^[\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_.]*\s*[＝=]\s*(.+)$/)
+      if (assignMatch) {
+        markCall(f.fileName, lineNo, parseCommandCall(assignMatch[1].trim()))
+      }
+
+      const callableLine = line.startsWith('.') ? line.substring(1).trim() : line
+      if (!callableLine) continue
+      markCall(f.fileName, lineNo, parseCommandCall(callableLine))
+    }
+  }
+
+  return byLib
 }
 
 function escapeCString(text: string): string {
@@ -1033,7 +1186,32 @@ function splitArguments(argsStr: string): string[] {
 }
 
 // 将易语言参数格式化为C语言参数
-function formatArgForC(arg: string): string {
+type ResolvedCommand = LibCommand & { libraryName: string; libraryFileName: string }
+
+function generateYcGenericCommandExpr(cmd: ResolvedCommand, args: string[]): string {
+  const n = args.length
+  const lines: string[] = []
+  lines.push(`([&]() -> ${mapTypeToCType(cmd.returnType || '整数型')} {`)
+  lines.push('YC_MDATA_INF __yc_ret = {};')
+  if (n > 0) {
+    lines.push(`YC_MDATA_INF __yc_args[${n}] = {};`)
+    for (let i = 0; i < n; i++) {
+      const p = cmd.params[i]
+      const mapped = mapParamTypeToYcDataType(p?.type || '')
+      const valueExpr = formatArgForYcCommand(args[i], mapped.field)
+      lines.push(`__yc_args[${i}].m_dtDataType = ${mapped.dtConst};`)
+      lines.push(`__yc_args[${i}].${mapped.field} = ${valueExpr};`)
+    }
+  }
+  const libNameEscaped = (cmd.libraryFileName || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  lines.push(`yc_invoke_support_cmd("${libNameEscaped}", ${cmd.commandIndex}, &__yc_ret, ${n}, ${n > 0 ? '__yc_args' : 'NULL'});`)
+  const retMapped = mapReturnTypeToYcField(cmd.returnType || '')
+  lines.push(`return ${retMapped.expr};`)
+  lines.push('})()')
+  return lines.join(' ')
+}
+
+function formatArgForC(arg: string, commandMap?: Map<string, ResolvedCommand>): string {
   if (!arg) return '0'
   const trimmed = arg.trim()
   // 中文引号字符串 → C宽字符串
@@ -1053,14 +1231,126 @@ function formatArgForC(arg: string): string {
   if (trimmed === '假') return '0'
   // 数值直接传递
   if (/^-?\d+(\.\d+)?$/.test(trimmed)) return trimmed
+  // 命令调用参数：支持表达式生成器或通用支持库返回表达式
+  if (commandMap) {
+    const call = parseCommandCall(trimmed)
+    if (call && call.name) {
+      const resolved = commandMap.get(call.name)
+      if (resolved) {
+        const exprGenerator = COMMAND_EXPR_GENERATORS[resolved.name]
+        if (exprGenerator) return exprGenerator(call.args || [])
+        return generateYcGenericCommandExpr(resolved, call.args || [])
+      }
+    }
+  }
   // 变量名或表达式：转换全角运算符
   return replaceConstantRefs(convertFullWidthOps(trimmed))
+}
+
+function mapParamTypeToYcDataType(typeName: string): { dtConst: string; field: string } {
+  switch (typeName) {
+    case '字节型': return { dtConst: 'YC_SDT_BYTE', field: 'm_byte' }
+    case '短整数型': return { dtConst: 'YC_SDT_SHORT', field: 'm_short' }
+    case '整数型': return { dtConst: 'YC_SDT_INT', field: 'm_int' }
+    case '长整数型': return { dtConst: 'YC_SDT_INT64', field: 'm_int64' }
+    case '小数型': return { dtConst: 'YC_SDT_FLOAT', field: 'm_float' }
+    case '双精度小数型': return { dtConst: 'YC_SDT_DOUBLE', field: 'm_double' }
+    case '逻辑型': return { dtConst: 'YC_SDT_BOOL', field: 'm_bool' }
+    case '文本型': return { dtConst: 'YC_SDT_TEXT', field: 'm_pText' }
+    default: return { dtConst: 'YC_SDT_INT', field: 'm_int' }
+  }
+}
+
+function formatArgForYcCommand(arg: string, field: string): string {
+  const trimmed = (arg || '').trim()
+  if (!trimmed) return field === 'm_pText' ? '(char*)""' : '0'
+
+  if (field === 'm_pText') {
+    const quoted = trimmed.match(/^\u201c(.*)\u201d$/) || trimmed.match(/^"(.*)"$/)
+    if (quoted) {
+      const content = quoted[1].replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+      return `(char*)"${content}"`
+    }
+    return `(char*)(${replaceConstantRefs(convertFullWidthOps(trimmed))})`
+  }
+
+  if (field === 'm_bool') {
+    if (trimmed === '真') return '1'
+    if (trimmed === '假') return '0'
+    return `(${replaceConstantRefs(convertFullWidthOps(trimmed))} ? 1 : 0)`
+  }
+
+  return replaceConstantRefs(convertFullWidthOps(trimmed))
+}
+
+function mapReturnTypeToYcField(typeName: string): { field: string; expr: string } {
+  switch (typeName) {
+    case '字节型': return { field: 'm_byte', expr: '__yc_ret.m_byte' }
+    case '短整数型': return { field: 'm_short', expr: '__yc_ret.m_short' }
+    case '整数型': return { field: 'm_int', expr: '__yc_ret.m_int' }
+    case '长整数型': return { field: 'm_int64', expr: '__yc_ret.m_int64' }
+    case '小数型': return { field: 'm_float', expr: '__yc_ret.m_float' }
+    case '双精度小数型': return { field: 'm_double', expr: '__yc_ret.m_double' }
+    case '逻辑型': return { field: 'm_bool', expr: '(__yc_ret.m_bool ? 1 : 0)' }
+    case '文本型': return { field: 'm_pText', expr: 'yc_utf8_to_wide(__yc_ret.m_pText)' }
+    default: return { field: 'm_int', expr: '__yc_ret.m_int' }
+  }
+}
+
+function generateYcGenericCommandCall(cmd: LibCommand & { libraryName: string; libraryFileName: string }, args: string[]): string {
+  const n = args.length
+  const lines: string[] = []
+  lines.push('{')
+  lines.push('YC_MDATA_INF __yc_ret = {};')
+  if (n > 0) {
+    lines.push(`YC_MDATA_INF __yc_args[${n}] = {};`)
+    for (let i = 0; i < n; i++) {
+      const p = cmd.params[i]
+      const mapped = mapParamTypeToYcDataType(p?.type || '')
+      const valueExpr = formatArgForYcCommand(args[i], mapped.field)
+      lines.push(`__yc_args[${i}].m_dtDataType = ${mapped.dtConst};`)
+      lines.push(`__yc_args[${i}].${mapped.field} = ${valueExpr};`)
+    }
+  }
+  const libNameEscaped = (cmd.libraryFileName || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  lines.push(`yc_invoke_support_cmd("${libNameEscaped}", ${cmd.commandIndex}, &__yc_ret, ${n}, ${n > 0 ? '__yc_args' : 'NULL'});`)
+  lines.push('}')
+  return lines.join(' ')
+}
+
+function generateYcGenericCommandAssign(cmd: LibCommand & { libraryName: string; libraryFileName: string }, args: string[], leftExpr: string): string {
+  const n = args.length
+  const lines: string[] = []
+  lines.push('{')
+  lines.push('YC_MDATA_INF __yc_ret = {};')
+  if (n > 0) {
+    lines.push(`YC_MDATA_INF __yc_args[${n}] = {};`)
+    for (let i = 0; i < n; i++) {
+      const p = cmd.params[i]
+      const mapped = mapParamTypeToYcDataType(p?.type || '')
+      const valueExpr = formatArgForYcCommand(args[i], mapped.field)
+      lines.push(`__yc_args[${i}].m_dtDataType = ${mapped.dtConst};`)
+      lines.push(`__yc_args[${i}].${mapped.field} = ${valueExpr};`)
+    }
+  }
+  const libNameEscaped = (cmd.libraryFileName || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+  lines.push(`yc_invoke_support_cmd("${libNameEscaped}", ${cmd.commandIndex}, &__yc_ret, ${n}, ${n > 0 ? '__yc_args' : 'NULL'});`)
+  const retMapped = mapReturnTypeToYcField(cmd.returnType || '')
+  lines.push(`${leftExpr} = ${retMapped.expr};`)
+  lines.push('}')
+  return lines.join(' ')
 }
 
 // 命令 → C代码生成器（直接按命令名索引，不按库名分组）
 // 命令属于哪个支持库由 buildCommandMap() 从 .fne 自动获取
 // 这里只定义命令的C代码翻译规则
-type CommandCodeGenerator = (args: string[]) => string
+type CommandCodeGenerator = (args: string[], commandMap?: Map<string, ResolvedCommand>) => string
+type CommandExprGenerator = (args: string[]) => string
+
+const COMMAND_EXPR_GENERATORS: Record<string, CommandExprGenerator> = {
+  '取本机名': (_args) => 'yc_get_local_hostname()',
+  '取主机名': (_args) => 'yc_get_local_hostname()',
+}
 
 const COMMAND_CODE_GENERATORS: Record<string, CommandCodeGenerator> = {
   '信息框': (args) => {
@@ -1069,30 +1359,27 @@ const COMMAND_CODE_GENERATORS: Record<string, CommandCodeGenerator> = {
     const title = args.length > 2 ? formatArgForC(args[2]) : 'L"提示"'
     return `MessageBoxW(NULL, ${msg}, ${title}, ${flags});`
   },
-  '标准输出': (args) => {
-    const arg = args[0] || ''
-    if (/^[\u201c"]/.test(arg)) {
-      // 使用窄字符串 printf：exec-charset=utf-8 保证字节为 UTF-8，管道侧按 UTF-8 解读
-      const narrowArg = formatArgForC(arg).replace(/^L/, '')
-      return `printf("%s\\n", ${narrowArg});`
-    }
-    return `printf("%lld\\n", (long long)(${formatArgForC(arg)}));`
+  '标准输出': (args, commandMap) => {
+    const arg = args[0] || '0'
+    return `yc_debug_output_value(${formatArgForC(arg, commandMap)});`
   },
-  '调试输出': (args) => {
-    const arg = args[0] || ''
-    if (/^[\u201c"]/.test(arg)) {
-      const narrowArg = formatArgForC(arg).replace(/^L/, '')
-      return `printf("%s\\n", ${narrowArg});`
-    }
-    return `printf("%lld\\n", (long long)(${arg}));`
+  '调试输出': (args, commandMap) => {
+    const arg = args[0] || '0'
+    return `yc_debug_output_value(${formatArgForC(arg, commandMap)});`
   },
   '输出调试文本': (args) => {
     return COMMAND_CODE_GENERATORS['调试输出'](args)
   },
+  '取本机名': (args) => {
+    return `(void)${COMMAND_EXPR_GENERATORS['取本机名'](args)};`
+  },
+  '取主机名': (args) => {
+    return `(void)${COMMAND_EXPR_GENERATORS['取主机名'](args)};`
+  },
 }
 
 // 为支持库命令生成C代码
-function generateCCodeForCommand(cmd: LibCommand & { libraryName: string; libraryFileName: string }, args: string[]): string {
+function generateCCodeForCommand(cmd: ResolvedCommand, args: string[], commandMap?: Map<string, ResolvedCommand>): string {
   const protocols = loadCompileProtocols()
   const protocolCode = resolveCommandByProtocol(
     protocols.commands,
@@ -1108,13 +1395,11 @@ function generateCCodeForCommand(cmd: LibCommand & { libraryName: string; librar
   // 查找已注册的代码生成器
   const generator = COMMAND_CODE_GENERATORS[cmd.name]
   if (generator) {
-    return generator(args)
+    return generator(args, commandMap)
   }
 
-  // 没有已注册的生成器：暂时生成注释占位，后续接入支持库的实际调用机制
-  const funcName = cmd.englishName || cmd.name
-  const cArgs = args.map(a => formatArgForC(a)).join(', ')
-  return `/* TODO: ${cmd.libraryName}.${cmd.name}(${funcName}) 尚未实现C代码生成，请在 ${cmd.libraryFileName}.events/protocol.json 中添加 commandBindings */ (void)0;`
+  // 通用回退：按“库名 + 命令索引”走支持库命令分发表。
+  return generateYcGenericCommandCall(cmd, args)
 }
 
 // .eyc 转 C 代码转译器
@@ -1127,7 +1412,70 @@ function transpileEycContent(eycContent: string, fileName: string, projectGlobal
 
   const lines = eycContent.split('\n')
   let result = `/* 由 ycIDE 自动从 ${fileName} 生成 */\n`
-  result += '#include <windows.h>\n#include <stdio.h>\n#include <stdint.h>\n\n'
+  result += '#include <windows.h>\n#include <stdio.h>\n#include <stdint.h>\n#include <stdlib.h>\n\n'
+  result += '#define YC_SDT_BYTE 0x80000101u\n'
+  result += '#define YC_SDT_SHORT 0x80000201u\n'
+  result += '#define YC_SDT_INT 0x80000301u\n'
+  result += '#define YC_SDT_INT64 0x80000401u\n'
+  result += '#define YC_SDT_FLOAT 0x80000501u\n'
+  result += '#define YC_SDT_DOUBLE 0x80000601u\n'
+  result += '#define YC_SDT_BOOL 0x80000002u\n'
+  result += '#define YC_SDT_TEXT 0x80000004u\n\n'
+  result += 'typedef uint32_t YC_DATA_TYPE;\n'
+  result += 'typedef struct YC_MDATA_INF {\n'
+  result += '    union {\n'
+  result += '        unsigned char m_byte;\n'
+  result += '        short m_short;\n'
+  result += '        int m_int;\n'
+  result += '        long long m_int64;\n'
+  result += '        float m_float;\n'
+  result += '        double m_double;\n'
+  result += '        int m_bool;\n'
+  result += '        char* m_pText;\n'
+  result += '    };\n'
+  result += '    YC_DATA_TYPE m_dtDataType;\n'
+  result += '} YC_MDATA_INF;\n\n'
+  result += 'extern "C" void yc_invoke_support_cmd(const char* libName, int cmdIndex, YC_MDATA_INF* pRetData, int argCount, YC_MDATA_INF* pArgs);\n'
+  result += 'extern void yc_set_control_text(const wchar_t* ctrlName, const wchar_t* text);\n\n'
+  result += 'static void yc_debug_output_value(const wchar_t* s) {\n'
+  result += '    wprintf(L"%ls\\n", s ? s : L"");\n'
+  result += '}\n'
+  result += 'static void yc_debug_output_value(wchar_t* s) {\n'
+  result += '    yc_debug_output_value((const wchar_t*)s);\n'
+  result += '}\n'
+  result += 'static void yc_debug_output_value(const char* s) {\n'
+  result += '    printf("%s\\n", s ? s : "");\n'
+  result += '}\n'
+  result += 'static void yc_debug_output_value(char* s) {\n'
+  result += '    yc_debug_output_value((const char*)s);\n'
+  result += '}\n'
+  result += 'template <typename T> static void yc_debug_output_value(T v) {\n'
+  result += '    printf("%lld\\n", (long long)(v));\n'
+  result += '}\n\n'
+  result += 'static wchar_t* yc_utf8_to_wide(const char* s) {\n'
+  result += '    if (!s) {\n'
+  result += '        wchar_t* emptyText = (wchar_t*)malloc(sizeof(wchar_t));\n'
+  result += '        if (emptyText) emptyText[0] = L\'\\0\';\n'
+  result += '        return emptyText;\n'
+  result += '    }\n'
+  result += '    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);\n'
+  result += '    if (n <= 0) return NULL;\n'
+  result += '    wchar_t* out = (wchar_t*)malloc(sizeof(wchar_t) * (size_t)n);\n'
+  result += '    if (!out) return NULL;\n'
+  result += '    if (MultiByteToWideChar(CP_UTF8, 0, s, -1, out, n) <= 0) {\n'
+  result += '        free(out);\n'
+  result += '        return NULL;\n'
+  result += '    }\n'
+  result += '    return out;\n'
+  result += '}\n\n'
+  result += 'static wchar_t* yc_get_local_hostname(void) {\n'
+  result += '    static wchar_t host[256];\n'
+  result += '    DWORD n = (DWORD)(sizeof(host) / sizeof(host[0]));\n'
+  result += '    if (!GetComputerNameW(host, &n)) {\n'
+  result += '        host[0] = L\'\\0\';\n'
+  result += '    }\n'
+  result += '    return host;\n'
+  result += '}\n\n'
 
   if (projectGlobals.length > 0) {
     result += '/* 项目全局变量声明 */\n'
@@ -1314,12 +1662,47 @@ function transpileEycContent(eycContent: string, fileName: string, projectGlobal
         continue
       }
 
-      // 赋值表达式：variable ＝ expr（全角等号）
-      const assignMatch = line.match(/^([\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_.]*)\s*＝\s*(.+)$/)
+      // 赋值表达式：支持全角/半角等号
+      const assignMatch = line.match(/^([\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_.]*)\s*[＝=]\s*(.+)$/)
       if (assignMatch) {
-        const varName = assignMatch[1]
-        const expr = replaceConstantRefs(convertFullWidthOps(assignMatch[2]))
-        emitSubLine(`${varName} = ${expr};`)
+        const left = assignMatch[1]
+        const rightRaw = assignMatch[2].trim()
+
+        const propMatch = left.match(/^([\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_]*)\.([\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_]*)$/)
+        const isTextProp = !!propMatch && (propMatch[2] === '内容' || propMatch[2] === '文本' || propMatch[2] === '标题' || propMatch[2].toLowerCase() === 'text')
+
+        const rhsCall = parseCommandCall(rightRaw)
+        const rhsResolved = rhsCall ? commandMap.get(rhsCall.name) : undefined
+        if (rhsCall && rhsResolved) {
+          const exprGenerator = COMMAND_EXPR_GENERATORS[rhsResolved.name]
+          if (exprGenerator) {
+            const expr = exprGenerator(rhsCall.args || [])
+            if (propMatch && isTextProp) {
+              emitSubLine(`yc_set_control_text(L"${escapeCString(propMatch[1])}", ${expr});`)
+            } else {
+              emitSubLine(`${left} = ${expr};`)
+            }
+            continue
+          }
+          const assignCode = generateYcGenericCommandAssign(rhsResolved, rhsCall.args || [], left)
+          emitSubLine(assignCode)
+          continue
+        }
+
+        const right = (/^(?:\u201c.*\u201d|".*")$/.test(rightRaw))
+          ? formatArgForC(rightRaw)
+          : replaceConstantRefs(convertFullWidthOps(rightRaw))
+
+        if (propMatch) {
+          const ctrlName = propMatch[1]
+          const propName = propMatch[2]
+          if (isTextProp) {
+            emitSubLine(`yc_set_control_text(L"${escapeCString(ctrlName)}", ${right});`)
+            continue
+          }
+        }
+
+        emitSubLine(`${left} = ${right};`)
         continue
       }
 
@@ -1333,13 +1716,13 @@ function transpileEycContent(eycContent: string, fileName: string, projectGlobal
         // 命令在支持库中找到 - 解析参数并生成C代码
         const call = parseCommandCall(callableLine)
         const args = call ? call.args : []
-        const cCode = generateCCodeForCommand(resolved, args)
+        const cCode = generateCCodeForCommand(resolved, args, commandMap)
         emitSubLine(cCode)
       } else {
         // 非支持库命令 - 尝试作为用户自定义子程序调用
         const call = parseCommandCall(callableLine)
         if (call && call.name) {
-          const cArgs = call.args.map(a => formatArgForC(a)).join(', ')
+          const cArgs = call.args.map(a => formatArgForC(a, commandMap)).join(', ')
           emitSubLine(`${call.name}(${cArgs});`)
         } else {
           emitSubLine(`/* ${line} */`)
@@ -1364,13 +1747,14 @@ function generateMainC(
   editorFiles?: Map<string, string>,
   linkMode: string = 'normal',
   linkedLibraries?: Array<{ name: string; fnePath: string; libName: string }>,
+  commandDispatchLibs?: string[],
 ): string[] {
   const mainCPath = join(tempDir, 'main.cpp')
   const additionalCFiles: string[] = []
 
   let mainCode = '/* 由 ycIDE 自动生成 */\n'
   mainCode += `/* 项目名称: ${project.projectName} */\n\n`
-  mainCode += '#include <windows.h>\n#include <commctrl.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <io.h>\n#include <fcntl.h>\n\n'
+  mainCode += '#include <windows.h>\n#include <commctrl.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n#include <io.h>\n#include <fcntl.h>\n\n'
 
   const isWindowsApp = project.outputType === 'WindowsApp'
   const projectGlobals = collectProjectGlobalVars(project, editorFiles)
@@ -1379,18 +1763,107 @@ function generateMainC(
   const usedLibraryNames = new Set(librariesForBuild.map(l => l.name))
   const libraryConstants = collectLibraryConstants(usedLibraryNames)
 
+  mainCode += '#define YC_SDT_BYTE 0x80000101u\n'
+  mainCode += '#define YC_SDT_SHORT 0x80000201u\n'
+  mainCode += '#define YC_SDT_INT 0x80000301u\n'
+  mainCode += '#define YC_SDT_INT64 0x80000401u\n'
+  mainCode += '#define YC_SDT_FLOAT 0x80000501u\n'
+  mainCode += '#define YC_SDT_DOUBLE 0x80000601u\n'
+  mainCode += '#define YC_SDT_BOOL 0x80000002u\n'
+  mainCode += '#define YC_SDT_TEXT 0x80000004u\n\n'
+  mainCode += 'typedef uint32_t YC_DATA_TYPE;\n'
+  mainCode += 'typedef struct YC_MDATA_INF {\n'
+  mainCode += '    union {\n'
+  mainCode += '        unsigned char m_byte;\n'
+  mainCode += '        short m_short;\n'
+  mainCode += '        int m_int;\n'
+  mainCode += '        long long m_int64;\n'
+  mainCode += '        float m_float;\n'
+  mainCode += '        double m_double;\n'
+  mainCode += '        int m_bool;\n'
+  mainCode += '        char* m_pText;\n'
+  mainCode += '    };\n'
+  mainCode += '    YC_DATA_TYPE m_dtDataType;\n'
+  mainCode += '} YC_MDATA_INF;\n'
+  mainCode += 'typedef void (*YC_PFN_EXECUTE_CMD)(YC_MDATA_INF* pRetData, int nArgCount, YC_MDATA_INF* pArgInf);\n\n'
+
+  const staticCmdDispatchLibs = Array.from(new Set(commandDispatchLibs || []))
+  if (linkMode === 'static') {
+    for (const libName of staticCmdDispatchLibs) {
+      mainCode += `extern YC_PFN_EXECUTE_CMD g_cmdInfo_${libName}_global_var_fun[];\n`
+    }
+    mainCode += '\n'
+    mainCode += 'extern "C" void yc_invoke_support_cmd(const char* libName, int cmdIndex, YC_MDATA_INF* pRetData, int argCount, YC_MDATA_INF* pArgs) {\n'
+    mainCode += '    if (!libName || cmdIndex < 0) return;\n'
+    mainCode += '    YC_PFN_EXECUTE_CMD fn = NULL;\n'
+    for (const libName of staticCmdDispatchLibs) {
+      mainCode += `    if (strcmp(libName, "${libName}") == 0) fn = g_cmdInfo_${libName}_global_var_fun[cmdIndex];\n`
+      mainCode += '    else '
+    }
+    if (staticCmdDispatchLibs.length > 0) {
+      mainCode += '{ }\n'
+    }
+    mainCode += '    if (!fn) return;\n'
+    mainCode += '    fn(pRetData, argCount, pArgs);\n'
+    mainCode += '}\n\n'
+  } else {
+    const dispatchLibInfos = staticCmdDispatchLibs
+      .map((libName) => ({ libName, lib: librariesForBuild.find(l => l.name === libName) }))
+      .filter((x): x is { libName: string; lib: { name: string; fnePath: string; libName: string } } => !!x.lib)
+
+    mainCode += 'typedef INT_PTR (WINAPI *YC_PFN_NOTIFY_LIB)(INT nMsg, DWORD_PTR dwParam1, DWORD_PTR dwParam2);\n'
+    mainCode += '#define NL_GET_CMD_FUNC_NAMES 14\n\n'
+    mainCode += 'static YC_PFN_EXECUTE_CMD yc_resolve_cmd_from_module(HMODULE hMod, const char* notifyExport, int cmdIndex) {\n'
+    mainCode += '    if (!hMod || !notifyExport || cmdIndex < 0) return NULL;\n'
+    mainCode += '    FARPROC pNotify = GetProcAddress(hMod, notifyExport);\n'
+    mainCode += '    if (!pNotify) return NULL;\n'
+    mainCode += '    YC_PFN_NOTIFY_LIB notifyFn = (YC_PFN_NOTIFY_LIB)pNotify;\n'
+    mainCode += '    const char** cmdNames = (const char**)notifyFn(NL_GET_CMD_FUNC_NAMES, 0, 0);\n'
+    mainCode += '    if (!cmdNames) return NULL;\n'
+    mainCode += '    const char* fnName = cmdNames[cmdIndex];\n'
+    mainCode += '    if (!fnName || !fnName[0]) return NULL;\n'
+    mainCode += '    return (YC_PFN_EXECUTE_CMD)GetProcAddress(hMod, fnName);\n'
+    mainCode += '}\n\n'
+
+    for (const info of dispatchLibInfos) {
+      mainCode += `static HMODULE g_cmd_mod_${info.libName} = NULL;\n`
+    }
+    if (dispatchLibInfos.length > 0) mainCode += '\n'
+
+    mainCode += 'extern "C" void yc_invoke_support_cmd(const char* libName, int cmdIndex, YC_MDATA_INF* pRetData, int argCount, YC_MDATA_INF* pArgs) {\n'
+    mainCode += '    if (!libName || cmdIndex < 0) return;\n'
+    mainCode += '    YC_PFN_EXECUTE_CMD fn = NULL;\n'
+    for (const info of dispatchLibInfos) {
+      const fnePathEscaped = escapeCString(info.lib.fnePath).replace(/"/g, '\\"')
+      const notifyExport = `${info.libName}_ProcessNotifyLib_${info.libName}`
+      mainCode += `    if (strcmp(libName, "${info.libName}") == 0) {\n`
+      mainCode += `        if (!g_cmd_mod_${info.libName}) g_cmd_mod_${info.libName} = LoadLibraryW(L"${fnePathEscaped}");\n`
+      mainCode += `        fn = yc_resolve_cmd_from_module(g_cmd_mod_${info.libName}, "${notifyExport}", cmdIndex);\n`
+      mainCode += '    }\n'
+      mainCode += '    else '
+    }
+    if (dispatchLibInfos.length > 0) {
+      mainCode += '{ }\n'
+    }
+    mainCode += '    if (!fn) return;\n'
+    mainCode += '    fn(pRetData, argCount, pArgs);\n'
+    mainCode += '}\n\n'
+  }
+
   if (isWindowsApp) {
     // 查找启动窗口文件
     let efwFile = project.files.find(f => f.fileName === '_启动窗口.efw')
     if (!efwFile) efwFile = project.files.find(f => f.type === 'EFW')
 
-    let winInfo: WindowFileInfo = { width: 592, height: 384, title: project.projectName, visible: true, disabled: false, border: 2, maxButton: true, minButton: true, controlBox: true, topmost: false, startPos: 1, controls: [] }
+    const defaultWindowFormName = efwFile ? basename(efwFile.fileName, '.efw') : '_启动窗口'
+    let winInfo: WindowFileInfo = { formName: defaultWindowFormName, width: 592, height: 384, title: project.projectName, visible: true, disabled: false, border: 2, maxButton: true, minButton: true, controlBox: true, topmost: false, startPos: 1, controls: [] }
     if (efwFile) {
       // 优先从编辑器内存中获取
       const editorContent = editorFiles?.get(efwFile.fileName)
       if (editorContent) {
         try {
           const data = JSON.parse(editorContent)
+          winInfo.formName = (data.name || data.formName || defaultWindowFormName || '_启动窗口')
           winInfo.width = data.width || 592
           winInfo.height = data.height || 384
           winInfo.title = data.title || data.name || project.projectName
@@ -1423,12 +1896,16 @@ function generateMainC(
       }
     }
 
+    const windowEventTarget = (winInfo.formName || defaultWindowFormName || '_启动窗口').trim() || '_启动窗口'
+    const windowEventPrefix = `_${windowEventTarget}`
+
     // 全局变量
     mainCode += 'static const wchar_t* g_szClassName = L"ycIDEWindowClass";\n'
     mainCode += `static const wchar_t* g_szTitle = L"${winInfo.title}";\n`
     mainCode += `static int g_nWidth = ${winInfo.width};\n`
     mainCode += `static int g_nHeight = ${winInfo.height};\n`
-    mainCode += 'static HINSTANCE g_hInstance;\n\n'
+    mainCode += 'static HINSTANCE g_hInstance;\n'
+    mainCode += 'static HWND g_hMainWnd = NULL;\n\n'
     // 在全局区生成窗口组件库初始化函数的 extern "C" 声明（仅静态编译模式，跳过系统核心库）
     {
       const arch = project.platform === 'x86' ? 'x86' : 'x64'
@@ -1454,6 +1931,20 @@ function generateMainC(
       }
       mainCode += '\n'
     }
+
+    mainCode += 'static HWND yc_get_control_handle_by_name(const wchar_t* ctrlName) {\n'
+    mainCode += '    if (!ctrlName || !g_hMainWnd) return NULL;\n'
+    for (const ctrl of winInfo.controls) {
+      mainCode += `    if (lstrcmpW(ctrlName, L"${escapeCString(ctrl.name)}") == 0) return GetDlgItem(g_hMainWnd, IDC_${ctrl.name.toUpperCase()});\n`
+    }
+    mainCode += '    return NULL;\n'
+    mainCode += '}\n\n'
+
+    mainCode += 'void yc_set_control_text(const wchar_t* ctrlName, const wchar_t* text) {\n'
+    mainCode += '    HWND hCtrl = yc_get_control_handle_by_name(ctrlName);\n'
+    mainCode += '    if (!hCtrl) return;\n'
+    mainCode += '    SetWindowTextW(hCtrl, text ? text : L"");\n'
+    mainCode += '}\n\n'
 
     // 前向声明 .eyc 中的子程序
     // 查找关联的 .eyc 文件并转译
@@ -1590,6 +2081,29 @@ function generateMainC(
       }
     }
 
+    // 去重：支持库元数据或协议重复时，避免同一事件处理函数被重复分发调用。
+    const seenCommandBindings = new Set<string>()
+    const uniqueCommandEventBindings = commandEventBindings.filter(b => {
+      const key = `${b.ctrlName}|${b.notifyCode}|${b.handlerName}`
+      if (seenCommandBindings.has(key)) return false
+      seenCommandBindings.add(key)
+      return true
+    })
+    const seenNotifyBindings = new Set<string>()
+    const uniqueNotifyEventBindings = notifyEventBindings.filter(b => {
+      const key = `${b.ctrlName}|${b.notifyCode}|${b.handlerName}`
+      if (seenNotifyBindings.has(key)) return false
+      seenNotifyBindings.add(key)
+      return true
+    })
+    const seenScrollBindings = new Set<string>()
+    const uniqueScrollEventBindings = scrollEventBindings.filter(b => {
+      const key = `${b.ctrlName}|${b.message}|${b.handlerName}`
+      if (seenScrollBindings.has(key)) return false
+      seenScrollBindings.add(key)
+      return true
+    })
+
     mainCode += '/* 事件处理函数默认实现 */\n'
     mainCode += '#define WEAK_FUNC __attribute__((weak))\n'
 
@@ -1605,32 +2119,32 @@ function generateMainC(
       }
     }
 
-    for (const b of commandEventBindings) {
+    for (const b of uniqueCommandEventBindings) {
       if (declaredHandlers.has(b.handlerName)) continue
       declaredHandlers.add(b.handlerName)
       mainCode += `WEAK_FUNC void ${b.handlerName}(void) { }\n`
     }
-    for (const b of notifyEventBindings) {
+    for (const b of uniqueNotifyEventBindings) {
       if (declaredHandlers.has(b.handlerName)) continue
       declaredHandlers.add(b.handlerName)
       mainCode += `WEAK_FUNC void ${b.handlerName}(void) { }\n`
     }
-    for (const b of scrollEventBindings) {
+    for (const b of uniqueScrollEventBindings) {
       if (declaredHandlers.has(b.handlerName)) continue
       declaredHandlers.add(b.handlerName)
       mainCode += `WEAK_FUNC void ${b.handlerName}(void) { }\n`
     }
 
-    mainCode += 'WEAK_FUNC void __启动窗口_创建完毕(void) { }\n'
-    mainCode += 'WEAK_FUNC void __启动窗口_按下某键(int 键代码, int 功能键状态) { }\n'
-    mainCode += 'WEAK_FUNC void __启动窗口_某键被放开(int 键代码, int 功能键状态) { }\n'
-    mainCode += 'WEAK_FUNC void __启动窗口_窗口尺寸被改变(int 宽度, int 高度) { }\n'
-    mainCode += 'WEAK_FUNC void __启动窗口_被移动(int 左边, int 顶边) { }\n'
-    mainCode += 'WEAK_FUNC void __启动窗口_被激活(int 激活状态) { }\n'
-    mainCode += 'WEAK_FUNC void __启动窗口_得到焦点(void) { }\n'
-    mainCode += 'WEAK_FUNC void __启动窗口_失去焦点(void) { }\n'
-    mainCode += 'WEAK_FUNC void __启动窗口_即将被销毁(void) { }\n'
-    mainCode += 'WEAK_FUNC void __启动窗口_被销毁(void) { }\n'
+    mainCode += `WEAK_FUNC void ${windowEventPrefix}_创建完毕(void) { }\n`
+    mainCode += `WEAK_FUNC void ${windowEventPrefix}_按下某键(int 键代码, int 功能键状态) { }\n`
+    mainCode += `WEAK_FUNC void ${windowEventPrefix}_某键被放开(int 键代码, int 功能键状态) { }\n`
+    mainCode += `WEAK_FUNC void ${windowEventPrefix}_窗口尺寸被改变(int 宽度, int 高度) { }\n`
+    mainCode += `WEAK_FUNC void ${windowEventPrefix}_被移动(int 左边, int 顶边) { }\n`
+    mainCode += `WEAK_FUNC void ${windowEventPrefix}_被激活(int 激活状态) { }\n`
+    mainCode += `WEAK_FUNC void ${windowEventPrefix}_得到焦点(void) { }\n`
+    mainCode += `WEAK_FUNC void ${windowEventPrefix}_失去焦点(void) { }\n`
+    mainCode += `WEAK_FUNC void ${windowEventPrefix}_即将被销毁(void) { }\n`
+    mainCode += `WEAK_FUNC void ${windowEventPrefix}_被销毁(void) { }\n`
 
     // 窗口过程
     mainCode += '/* 窗口过程函数 */\n'
@@ -1638,7 +2152,7 @@ function generateMainC(
     mainCode += '    switch (message) {\n'
     mainCode += '    case WM_CREATE:\n'
     mainCode += '        CreateControls(hWnd);\n'
-    mainCode += '        __启动窗口_创建完毕();\n'
+    mainCode += `        ${windowEventPrefix}_创建完毕();\n`
     mainCode += '        break;\n'
     mainCode += '    case WM_COMMAND: {\n'
     mainCode += '        int wmId = LOWORD(wParam);\n'
@@ -1647,13 +2161,15 @@ function generateMainC(
 
     ctrlId = 1001
     for (const ctrl of winInfo.controls) {
-      const bindings = commandEventBindings.filter(b => b.ctrlName === ctrl.name)
+      const bindings = uniqueCommandEventBindings.filter(b => b.ctrlName === ctrl.name)
       const hasCompatClick = isClickable(ctrl.type)
+      const compatClickHandler = `_${ctrl.name.replace(/^_+/, '')}_被单击`
+      const hasCompatClickBinding = bindings.some(b => b.notifyCode === 'BN_CLICKED' && b.handlerName === compatClickHandler)
       if (bindings.length > 0 || hasCompatClick) {
         mainCode += `        case IDC_${ctrl.name.toUpperCase()}:\n`
-        if (hasCompatClick) {
+        if (hasCompatClick && !hasCompatClickBinding) {
           mainCode += '            if (wmEvent == BN_CLICKED) {\n'
-          mainCode += `                _${ctrl.name.replace(/^_+/, '')}_被单击();\n`
+          mainCode += `                ${compatClickHandler}();\n`
           mainCode += '            }\n'
         }
         for (const b of bindings) {
@@ -1674,7 +2190,7 @@ function generateMainC(
 
     ctrlId = 1001
     for (const ctrl of winInfo.controls) {
-      const bindings = notifyEventBindings.filter(b => b.ctrlName === ctrl.name)
+      const bindings = uniqueNotifyEventBindings.filter(b => b.ctrlName === ctrl.name)
       if (bindings.length > 0) {
         mainCode += `        case IDC_${ctrl.name.toUpperCase()}:\n`
         for (const b of bindings) {
@@ -1697,7 +2213,7 @@ function generateMainC(
 
     ctrlId = 1001
     for (const ctrl of winInfo.controls) {
-      const bindings = scrollEventBindings.filter(b => b.ctrlName === ctrl.name)
+      const bindings = uniqueScrollEventBindings.filter(b => b.ctrlName === ctrl.name)
       if (bindings.length > 0) {
         mainCode += `        case IDC_${ctrl.name.toUpperCase()}:\n`
         for (const b of bindings) {
@@ -1722,33 +2238,33 @@ function generateMainC(
     mainCode += '    }\n'
     mainCode += '    case WM_KEYDOWN:\n'
     mainCode += '    case WM_SYSKEYDOWN:\n'
-    mainCode += '        __启动窗口_按下某键((int)wParam, (int)lParam);\n'
+    mainCode += `        ${windowEventPrefix}_按下某键((int)wParam, (int)lParam);\n`
     mainCode += '        break;\n'
     mainCode += '    case WM_KEYUP:\n'
     mainCode += '    case WM_SYSKEYUP:\n'
-    mainCode += '        __启动窗口_某键被放开((int)wParam, (int)lParam);\n'
+    mainCode += `        ${windowEventPrefix}_某键被放开((int)wParam, (int)lParam);\n`
     mainCode += '        break;\n'
     mainCode += '    case WM_SIZE:\n'
-    mainCode += '        __启动窗口_窗口尺寸被改变((int)LOWORD(lParam), (int)HIWORD(lParam));\n'
+    mainCode += `        ${windowEventPrefix}_窗口尺寸被改变((int)LOWORD(lParam), (int)HIWORD(lParam));\n`
     mainCode += '        break;\n'
     mainCode += '    case WM_MOVE:\n'
-    mainCode += '        __启动窗口_被移动((int)(short)LOWORD(lParam), (int)(short)HIWORD(lParam));\n'
+    mainCode += `        ${windowEventPrefix}_被移动((int)(short)LOWORD(lParam), (int)(short)HIWORD(lParam));\n`
     mainCode += '        break;\n'
     mainCode += '    case WM_ACTIVATE:\n'
-    mainCode += '        __启动窗口_被激活((int)LOWORD(wParam));\n'
+    mainCode += `        ${windowEventPrefix}_被激活((int)LOWORD(wParam));\n`
     mainCode += '        break;\n'
     mainCode += '    case WM_SETFOCUS:\n'
-    mainCode += '        __启动窗口_得到焦点();\n'
+    mainCode += `        ${windowEventPrefix}_得到焦点();\n`
     mainCode += '        break;\n'
     mainCode += '    case WM_KILLFOCUS:\n'
-    mainCode += '        __启动窗口_失去焦点();\n'
+    mainCode += `        ${windowEventPrefix}_失去焦点();\n`
     mainCode += '        break;\n'
     mainCode += '    case WM_CLOSE:\n'
-    mainCode += '        __启动窗口_即将被销毁();\n'
+    mainCode += `        ${windowEventPrefix}_即将被销毁();\n`
     mainCode += '        DestroyWindow(hWnd);\n'
     mainCode += '        break;\n'
     mainCode += '    case WM_DESTROY:\n'
-    mainCode += '        __启动窗口_被销毁();\n'
+    mainCode += `        ${windowEventPrefix}_被销毁();\n`
     mainCode += '        PostQuitMessage(0);\n'
     mainCode += '        break;\n'
     mainCode += '    default:\n'
@@ -1865,6 +2381,7 @@ function generateMainC(
     mainCode += '        MessageBoxW(NULL, L"窗口创建失败!", L"错误", MB_ICONERROR);\n'
     mainCode += '        return 1;\n'
     mainCode += '    }\n'
+    mainCode += '    g_hMainWnd = hWnd;\n'
     if (winInfo.disabled) mainCode += '    EnableWindow(hWnd, FALSE);\n'
     mainCode += `    ShowWindow(hWnd, ${winInfo.visible ? 'nCmdShow' : 'SW_HIDE'});\n`
     mainCode += '    UpdateWindow(hWnd);\n'
@@ -1986,14 +2503,29 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
 
     // ========== 支持库链接 ==========
     const linkMode = options.linkMode || 'normal'
+    const preferDynamicInNormal = linkMode !== 'static' && !!options.debug
     const loadedLibs = libraryManager.getLoadedLibraryFiles()
     const usedLibraryNames = collectUsedLibraryFileNames(project, editorFiles)
+    const genericFallbackLibraryNames = collectGenericFallbackLibraryFileNames(project, editorFiles)
     const libsToLink = loadedLibs.filter(l => usedLibraryNames.has(l.name))
     sendMessage({ type: 'info', text: `编译模式: ${linkMode === 'static' ? '静态编译' : '普通编译'}` })
 
+    // 仅对“本次会静态链接”的支持库生成命令分发表引用，避免动态路径下出现未定义符号。
+    const staticCmdDispatchLibs: string[] = []
+    for (const lib of libsToLink) {
+      const staticLib = libraryManager.findStaticLib(lib.name, arch)
+      if (!genericFallbackLibraryNames.has(lib.name)) continue
+      if (linkMode === 'static') {
+        if (!staticLib) continue
+        staticCmdDispatchLibs.push(lib.name)
+        continue
+      }
+      staticCmdDispatchLibs.push(lib.name)
+    }
+
     // 生成C++代码
     sendMessage({ type: 'info', text: '正在生成C++代码...' })
-    const additionalCFiles = generateMainC(project, tempDir, editorFiles, linkMode, libsToLink)
+    const additionalCFiles = generateMainC(project, tempDir, editorFiles, linkMode, libsToLink, staticCmdDispatchLibs)
     const outputName = project.projectName
     const outputExe = join(outputDir, outputName + '.exe')
     const mainC = join(tempDir, 'main.cpp')
@@ -2048,7 +2580,13 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
           linkFailed = true
         }
       } else {
-        // 普通/调试编译：优先 .lib，没有则复制 .fne 到输出目录
+        // 普通编译：调试运行优先动态加载支持库，避免调试态仍走静态链接。
+        if (preferDynamicInNormal) {
+          sendMessage({ type: 'info', text: `  ✓ ${lib.libName} (${lib.name}) - 动态加载: ${lib.name}.fne` })
+          continue
+        }
+
+        // 普通编译（非调试）：优先 .lib，没有则复制 .fne 到输出目录
         if (staticLib) {
           // 有窗口组件的库（如 ycui）在普通编译下走 .fne 动态加载，避免引入额外系统 .lib 依赖
           const info = libraryManager.getLibInfo(lib.name)
@@ -2107,6 +2645,9 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
 
     sendMessage({ type: 'info', text: '正在编译...' })
 
+    const commandSourceLocations = collectCommandSourceLocationsByLibrary(project, editorFiles)
+    const unresolvedCmdLibReported = new Set<string>()
+
     // 调用 clang
     const compileSuccess = await new Promise<boolean>((resolve) => {
       const clangDir = dirname(clangPath)
@@ -2115,14 +2656,37 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
           const lines = stderr.split('\n').filter(l => l.trim())
           for (const line of lines) {
             const lower = line.toLowerCase()
+            const localized = localizeCompilerMessage(line)
+
+            const unresolvedMatch = line.match(/g_cmdInfo_([A-Za-z0-9_]+)_global_var_fun/i)
+            if (unresolvedMatch) {
+              const libFileName = unresolvedMatch[1]
+              if (!unresolvedCmdLibReported.has(libFileName)) {
+                unresolvedCmdLibReported.add(libFileName)
+                const hits = commandSourceLocations.get(libFileName) || []
+                if (hits.length > 0) {
+                  sendMessage({ type: 'warning', text: `>>> 易语言源码位置（支持库 ${libFileName}）:` })
+                  const maxHints = 8
+                  for (const hit of hits.slice(0, maxHints)) {
+                    sendMessage({ type: 'warning', text: `>>>   ${hit.fileName}:${hit.lineNo}  命令: ${hit.commandName}` })
+                  }
+                  if (hits.length > maxHints) {
+                    sendMessage({ type: 'warning', text: `>>>   ... 其余 ${hits.length - maxHints} 处调用已省略` })
+                  }
+                } else {
+                  sendMessage({ type: 'warning', text: `>>> 未能自动定位对应易语言源码位置（支持库 ${libFileName}）` })
+                }
+              }
+            }
+
             if (lower.includes('error')) {
-              sendMessage({ type: 'error', text: line })
+              sendMessage({ type: 'error', text: localized })
               result.errorCount++
             } else if (lower.includes('warning')) {
-              sendMessage({ type: 'warning', text: line })
+              sendMessage({ type: 'warning', text: localized })
               result.warningCount++
             } else {
-              sendMessage({ type: 'info', text: line })
+              sendMessage({ type: 'info', text: localized })
             }
           }
         }
