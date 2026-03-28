@@ -1,10 +1,11 @@
 import { app, BrowserWindow, Menu, dialog, ipcMain, shell, type BrowserWindowConstructorOptions, type MenuItemConstructorOptions } from 'electron'
 import { join, dirname, basename, extname } from 'path'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, appendFileSync, copyFileSync, statSync } from 'fs'
-import { libraryManager } from './library-manager'
+import { libraryManager } from './libraryManager'
 import { compileProject, runExecutable, stopExecutable, isRunning } from './compiler'
 import { normalizeRuntimePlatform } from '../shared/platform'
 import { getActionAccelerator } from '../shared/shortcut-config'
+import { scanYcmdRegistry } from './ycmd-registry'
 
 const isDev = !app.isPackaged
 const runtimePlatform = normalizeRuntimePlatform(process.platform)
@@ -196,7 +197,6 @@ function setupNativeMenu(): void {
       label: '编译',
       submenu: [
         actionItem('普通编译', 'build:compile', getActionAccelerator('build:compile')),
-        actionItem('静态编译', 'build:compile-static'),
         { type: 'separator' },
         actionItem('编译运行', 'build:run', 'F5'),
       ]
@@ -910,6 +910,10 @@ app.whenReady().then(() => {
     return libraryManager.getAllWindowUnits()
   })
 
+  ipcMain.handle('ycmd:scan', (_event, rootPath?: string) => {
+    return scanYcmdRegistry(rootPath)
+  })
+
   // 主题 IPC
   ipcMain.handle('theme:getList', () => {
     const themesDir = isDev ? join(app.getAppPath(), 'themes') : join(dirname(process.execPath), 'themes')
@@ -945,9 +949,9 @@ app.whenReady().then(() => {
   })
 
   // 编译器 IPC
-  ipcMain.handle('compiler:compile', async (_event, projectDir: string, editorFilesObj?: Record<string, string>, linkMode?: 'static' | 'normal', arch?: string) => {
+  ipcMain.handle('compiler:compile', async (_event, projectDir: string, editorFilesObj?: Record<string, string>, arch?: string) => {
     const editorFiles = editorFilesObj ? new Map(Object.entries(editorFilesObj)) : undefined
-    return compileProject({ projectDir, debug: true, linkMode: linkMode || 'normal', arch }, editorFiles)
+    return compileProject({ projectDir, debug: true, arch }, editorFiles)
   })
 
   ipcMain.handle('compiler:run', async (_event, projectDir: string, editorFilesObj?: Record<string, string>, arch?: string) => {

@@ -37,8 +37,6 @@ interface LibraryDialogProps {
 }
 
 function LibraryDialog({ open, onClose }: LibraryDialogProps): React.JSX.Element | null {
-  const runtimePlatform = window.api?.system?.getRuntimePlatform?.() ?? 'windows'
-  const canLoadFneLibraries = runtimePlatform === 'windows'
   const [libs, setLibs] = useState<LibItem[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
@@ -50,12 +48,9 @@ function LibraryDialog({ open, onClose }: LibraryDialogProps): React.JSX.Element
     if (!info) {
       return `相关文件：\n${lib.filePath}\n\n未能读取该支持库详细信息。`
     }
-    const relatedDir = lib.filePath.replace(/\.fne$/i, '')
     return [
       '相关文件：',
       lib.filePath,
-      '相关目录：',
-      relatedDir,
       '',
       `数字签名：${info.guid || '-'}`,
       `说明： ${info.description || '-'}`,
@@ -76,7 +71,7 @@ function LibraryDialog({ open, onClose }: LibraryDialogProps): React.JSX.Element
   const refreshList = useCallback(async (preserveStatusText = false) => {
     const list = await window.api.library.getList()
     setLibs(list)
-    const defaultSelected = new Set(list.filter((lib: LibItem) => lib.loaded).map((lib: LibItem) => lib.name))
+    const defaultSelected = new Set<string>(list.filter((lib: LibItem) => lib.loaded).map((lib: LibItem) => lib.name))
     setSelected(defaultSelected)
     if (list.length === 0) {
       setSelectedLibName('')
@@ -115,12 +110,8 @@ function LibraryDialog({ open, onClose }: LibraryDialogProps): React.JSX.Element
   }
 
   const handleApplySelection = async (): Promise<void> => {
-    if (!canLoadFneLibraries) {
-      setStatusText('当前平台暂不支持加载 .fne 支持库（仅 Windows 可用）。请在 Windows 端执行支持库加载与调试。')
-      return
-    }
     setLoading(true)
-    setStatusText('正在应用支持库选择...')
+    setStatusText('正在同步支持库清单...')
     const result = await window.api.library.applySelection(Array.from(selected))
     if (result.failed.length > 0) {
       const failText = result.failed.map((f: { name: string; error: string }) => `${f.name}: ${f.error}`).join('；')
@@ -157,12 +148,6 @@ function LibraryDialog({ open, onClose }: LibraryDialogProps): React.JSX.Element
           <button className="lib-btn lib-btn-primary" onClick={handleApplySelection} disabled={loading || libs.length === 0}>应用选择</button>
         </div>
 
-        {!canLoadFneLibraries && (
-          <div className="lib-dialog-tip" role="note">
-            当前为 {runtimePlatform} 平台：.fne 支持库仅能在 Windows 下加载，当前页面仅支持查看信息。
-          </div>
-        )}
-
         <div className="lib-dialog-list">
           <table className="lib-table">
             <thead>
@@ -180,7 +165,7 @@ function LibraryDialog({ open, onClose }: LibraryDialogProps): React.JSX.Element
               {libs.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="lib-empty">
-                    未找到支持库，请将 .fne 文件放入 lib 文件夹
+                    未找到支持库清单，请将 *.ycmd.json 文件放入 lib 子目录
                   </td>
                 </tr>
               ) : (
@@ -201,7 +186,7 @@ function LibraryDialog({ open, onClose }: LibraryDialogProps): React.JSX.Element
                         disabled={loading}
                         onClick={() => showLibDetail(lib.name)}
                       >
-                        {lib.name}.fne
+                        {lib.name}
                       </button>
                     </td>
                     <td>

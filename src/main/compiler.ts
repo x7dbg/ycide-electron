@@ -1,9 +1,10 @@
 import { join, dirname, basename } from 'path'
-import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, copyFileSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs'
 import { execFile, ChildProcess } from 'child_process'
 import { app, BrowserWindow } from 'electron'
-import { libraryManager } from './library-manager'
-import type { LibCommand, LibConstant, LibWindowUnit } from './fne-parser'
+import { libraryManager } from './libraryManager'
+import type { LibraryCommand as LibCommand, LibraryConstant as LibConstant, LibraryWindowUnit as LibWindowUnit } from './libraryManager'
+import { getYcmdCommands } from './ycmd-registry'
 
 // 编译消息类型
 export interface CompileMessage {
@@ -15,7 +16,6 @@ export interface CompileMessage {
 export interface CompileOptions {
   projectDir: string
   debug?: boolean
-  linkMode?: 'static' | 'normal'  // 静态编译 | 普通编译（默认普通）
   arch?: string                    // 目标架构（优先于 .epp 中的 platform）
 }
 
@@ -198,15 +198,34 @@ function getAppDirectory(): string {
   return dirname(process.execPath)
 }
 
+function getHostExecutableCandidates(baseName: string): string[] {
+  if (process.platform === 'win32') {
+    return [`${baseName}.exe`, baseName]
+  }
+  return [baseName, `${baseName}.exe`]
+}
+
 // 查找 Clang 编译器
 function findClangCompiler(): string | null {
   const appDir = getAppDirectory()
-  const searchPaths = [
-    join(appDir, 'compiler', 'llvm', 'bin', 'clang.exe'),
-    join(appDir, 'compiler', 'bin', 'clang.exe'),
+  const searchDirs = [
+    join(appDir, 'compiler', 'llvm', 'bin'),
+    join(appDir, 'compiler', 'bin'),
   ]
-  for (const p of searchPaths) {
-    if (existsSync(p)) return p
+  for (const dir of searchDirs) {
+    for (const fileName of getHostExecutableCandidates('clang')) {
+      const fullPath = join(dir, fileName)
+      if (existsSync(fullPath)) return fullPath
+    }
+  }
+  return null
+}
+
+function findToolNearClang(clangPath: string, toolName: string): string | null {
+  const toolDir = dirname(clangPath)
+  for (const fileName of getHostExecutableCandidates(toolName)) {
+    const fullPath = join(toolDir, fileName)
+    if (existsSync(fullPath)) return fullPath
   }
   return null
 }
@@ -1062,7 +1081,7 @@ function toCLibraryConstantValue(c: LibraryConstantDef): string {
 // ========== 基于支持库的命令解析系统 ==========
 
 // 从已加载的支持库构建命令查找表
-// 命令名 → 支持库命令信息（来源完全由 .fne 决定，不硬编码归属）
+// 命令名 → 支持库命令信息（来源由支持库元数据决定）
 function buildCommandMap(): Map<string, LibCommand & { libraryName: string; libraryFileName: string }> {
   const map = new Map<string, LibCommand & { libraryName: string; libraryFileName: string }>()
   const allCommands = libraryManager.getAllCommands()
@@ -1073,6 +1092,130 @@ function buildCommandMap(): Map<string, LibCommand & { libraryName: string; libr
     map.set(cmd.name, cmd)
   }
   return map
+}
+
+interface CommandSignatureDef {
+  name: string
+  params: Array<{ optional: boolean }>
+  source: 'fne' | 'ycmd'
+  libraryFileName: string
+  manifestPath?: string
+}
+
+function buildCommandSignatureMap(): Map<string, CommandSignatureDef> {
+  const map = new Map<string, CommandSignatureDef>()
+
+  for (const cmd of libraryManager.getAllCommands()) {
+    if (cmd.isHidden) continue
+    map.set(cmd.name, {
+      name: cmd.name,
+      params: cmd.params || [],
+      source: 'fne',
+      libraryFileName: cmd.libraryFileName,
+    })
+  }
+
+  for (const cmd of getYcmdCommands()) {
+    if (map.has(cmd.name)) continue
+    map.set(cmd.name, {
+      name: cmd.name,
+      params: cmd.params || [],
+      source: 'ycmd',
+      libraryFileName: cmd.libraryFileName,
+      manifestPath: cmd.manifestPath,
+    })
+  }
+
+  return map
+}
+
+function collectProjectSubprogramNames(project: ProjectInfo, editorFiles?: Map<string, string>): Set<string> {
+  const names = new Set<string>()
+  for (const f of project.files) {
+    if (f.type !== 'EYC' && f.type !== 'EGV' && f.type !== 'ECS' && f.type !== 'EDT' && f.type !== 'ELL') continue
+    const sourcePath = join(project.projectDir, f.fileName)
+    const editorContent = editorFiles?.get(f.fileName)
+    const content = editorContent || (existsSync(sourcePath) ? readFileSync(sourcePath, 'utf-8') : '')
+    if (!content) continue
+
+    for (const rawLine of content.split('\n')) {
+      const line = rawLine.replace(/[\u200B\u200C\u200D\u2060]/g, '').trim()
+      if (!line.startsWith('.子程序 ')) continue
+      const parts = line.substring(4).split(',').map(s => s.trim())
+      const name = (parts[0] || '').trim()
+      if (name) names.add(name)
+    }
+  }
+  return names
+}
+
+function validateProjectCommandSignatures(project: ProjectInfo, editorFiles?: Map<string, string>): string[] {
+  const errors: string[] = []
+  const commandMap = buildCommandSignatureMap()
+  const subprogramNames = collectProjectSubprogramNames(project, editorFiles)
+
+  const validateOne = (fileName: string, lineNo: number, call: { name: string; args: string[] } | null): void => {
+    if (!call?.name) return
+
+    const command = commandMap.get(call.name)
+    if (!command) return
+
+    const args = call.args || []
+    const maxParams = command.params.length
+    const minParams = command.params.filter(p => !p.optional).length
+    if (args.length < minParams || args.length > maxParams) {
+      const expected = minParams === maxParams ? `${maxParams}` : `${minParams}-${maxParams}`
+      errors.push(`错误: ${fileName}:${lineNo} 命令「${command.name}」参数数量不匹配，期望 ${expected} 个，实际 ${args.length} 个`)
+      return
+    }
+
+    // 当前阶段先让 ycmd 命令可见并参与签名校验；平台实现注入将在下一阶段接入。
+    if (command.source === 'ycmd' && !subprogramNames.has(call.name)) {
+      const detail = command.manifestPath ? `（清单: ${command.manifestPath}）` : ''
+      errors.push(`错误: ${fileName}:${lineNo} 命令「${command.name}」来自 ycmd，当前编译后端尚未接入平台实现注入${detail}`)
+    }
+  }
+
+  for (const f of project.files) {
+    if (f.type !== 'EYC' && f.type !== 'EGV' && f.type !== 'ECS' && f.type !== 'EDT' && f.type !== 'ELL') continue
+    const sourcePath = join(project.projectDir, f.fileName)
+    const editorContent = editorFiles?.get(f.fileName)
+    const content = editorContent || (existsSync(sourcePath) ? readFileSync(sourcePath, 'utf-8') : '')
+    if (!content) continue
+
+    const lines = content.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const lineNo = i + 1
+      const line = lines[i].replace(/[\u200B\u200C\u200D\u2060]/g, '').trim()
+      if (!line || line.startsWith("'")) continue
+
+      if (
+        line.startsWith('.版本') ||
+        line.startsWith('.程序集') ||
+        line.startsWith('.参数 ') ||
+        line.startsWith('.全局变量 ') ||
+        line.startsWith('.局部变量 ') ||
+        line.startsWith('.常量 ') ||
+        line.startsWith('.数据类型 ') ||
+        line.startsWith('.成员 ') ||
+        line.startsWith('.支持库 ') ||
+        line.startsWith('.子程序 ')
+      ) {
+        continue
+      }
+
+      const assignMatch = line.match(/^[\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_.]*\s*[＝=]\s*(.+)$/)
+      if (assignMatch) {
+        validateOne(f.fileName, lineNo, parseCommandCall(assignMatch[1].trim()))
+      }
+
+      const callableLine = line.startsWith('.') ? line.substring(1).trim() : line
+      if (!callableLine) continue
+      validateOne(f.fileName, lineNo, parseCommandCall(callableLine))
+    }
+  }
+
+  return errors
 }
 
 // 将全角运算符转换为C运算符
@@ -1342,7 +1485,7 @@ function generateYcGenericCommandAssign(cmd: LibCommand & { libraryName: string;
 }
 
 // 命令 → C代码生成器（直接按命令名索引，不按库名分组）
-// 命令属于哪个支持库由 buildCommandMap() 从 .fne 自动获取
+// 命令属于哪个支持库由 buildCommandMap() 自动获取
 // 这里只定义命令的C代码翻译规则
 type CommandCodeGenerator = (args: string[], commandMap?: Map<string, ResolvedCommand>) => string
 type CommandExprGenerator = (args: string[]) => string
@@ -1745,8 +1888,7 @@ function generateMainC(
   project: ProjectInfo,
   tempDir: string,
   editorFiles?: Map<string, string>,
-  linkMode: string = 'normal',
-  linkedLibraries?: Array<{ name: string; fnePath: string; libName: string }>,
+  linkedLibraries?: Array<{ name: string; libraryPath: string; libName: string }>,
   commandDispatchLibs?: string[],
 ): string[] {
   const mainCPath = join(tempDir, 'main.cpp')
@@ -1788,67 +1930,47 @@ function generateMainC(
   mainCode += 'typedef void (*YC_PFN_EXECUTE_CMD)(YC_MDATA_INF* pRetData, int nArgCount, YC_MDATA_INF* pArgInf);\n\n'
 
   const staticCmdDispatchLibs = Array.from(new Set(commandDispatchLibs || []))
-  if (linkMode === 'static') {
-    for (const libName of staticCmdDispatchLibs) {
-      mainCode += `extern YC_PFN_EXECUTE_CMD g_cmdInfo_${libName}_global_var_fun[];\n`
-    }
-    mainCode += '\n'
-    mainCode += 'extern "C" void yc_invoke_support_cmd(const char* libName, int cmdIndex, YC_MDATA_INF* pRetData, int argCount, YC_MDATA_INF* pArgs) {\n'
-    mainCode += '    if (!libName || cmdIndex < 0) return;\n'
-    mainCode += '    YC_PFN_EXECUTE_CMD fn = NULL;\n'
-    for (const libName of staticCmdDispatchLibs) {
-      mainCode += `    if (strcmp(libName, "${libName}") == 0) fn = g_cmdInfo_${libName}_global_var_fun[cmdIndex];\n`
-      mainCode += '    else '
-    }
-    if (staticCmdDispatchLibs.length > 0) {
-      mainCode += '{ }\n'
-    }
-    mainCode += '    if (!fn) return;\n'
-    mainCode += '    fn(pRetData, argCount, pArgs);\n'
-    mainCode += '}\n\n'
-  } else {
-    const dispatchLibInfos = staticCmdDispatchLibs
-      .map((libName) => ({ libName, lib: librariesForBuild.find(l => l.name === libName) }))
-      .filter((x): x is { libName: string; lib: { name: string; fnePath: string; libName: string } } => !!x.lib)
+  const dispatchLibInfos = staticCmdDispatchLibs
+    .map((libName) => ({ libName, lib: librariesForBuild.find(l => l.name === libName) }))
+    .filter((x): x is { libName: string; lib: { name: string; libraryPath: string; libName: string } } => !!x.lib)
 
-    mainCode += 'typedef INT_PTR (WINAPI *YC_PFN_NOTIFY_LIB)(INT nMsg, DWORD_PTR dwParam1, DWORD_PTR dwParam2);\n'
-    mainCode += '#define NL_GET_CMD_FUNC_NAMES 14\n\n'
-    mainCode += 'static YC_PFN_EXECUTE_CMD yc_resolve_cmd_from_module(HMODULE hMod, const char* notifyExport, int cmdIndex) {\n'
-    mainCode += '    if (!hMod || !notifyExport || cmdIndex < 0) return NULL;\n'
-    mainCode += '    FARPROC pNotify = GetProcAddress(hMod, notifyExport);\n'
-    mainCode += '    if (!pNotify) return NULL;\n'
-    mainCode += '    YC_PFN_NOTIFY_LIB notifyFn = (YC_PFN_NOTIFY_LIB)pNotify;\n'
-    mainCode += '    const char** cmdNames = (const char**)notifyFn(NL_GET_CMD_FUNC_NAMES, 0, 0);\n'
-    mainCode += '    if (!cmdNames) return NULL;\n'
-    mainCode += '    const char* fnName = cmdNames[cmdIndex];\n'
-    mainCode += '    if (!fnName || !fnName[0]) return NULL;\n'
-    mainCode += '    return (YC_PFN_EXECUTE_CMD)GetProcAddress(hMod, fnName);\n'
-    mainCode += '}\n\n'
+  mainCode += 'typedef INT_PTR (WINAPI *YC_PFN_NOTIFY_LIB)(INT nMsg, DWORD_PTR dwParam1, DWORD_PTR dwParam2);\n'
+  mainCode += '#define NL_GET_CMD_FUNC_NAMES 14\n\n'
+  mainCode += 'static YC_PFN_EXECUTE_CMD yc_resolve_cmd_from_module(HMODULE hMod, const char* notifyExport, int cmdIndex) {\n'
+  mainCode += '    if (!hMod || !notifyExport || cmdIndex < 0) return NULL;\n'
+  mainCode += '    FARPROC pNotify = GetProcAddress(hMod, notifyExport);\n'
+  mainCode += '    if (!pNotify) return NULL;\n'
+  mainCode += '    YC_PFN_NOTIFY_LIB notifyFn = (YC_PFN_NOTIFY_LIB)pNotify;\n'
+  mainCode += '    const char** cmdNames = (const char**)notifyFn(NL_GET_CMD_FUNC_NAMES, 0, 0);\n'
+  mainCode += '    if (!cmdNames) return NULL;\n'
+  mainCode += '    const char* fnName = cmdNames[cmdIndex];\n'
+  mainCode += '    if (!fnName || !fnName[0]) return NULL;\n'
+  mainCode += '    return (YC_PFN_EXECUTE_CMD)GetProcAddress(hMod, fnName);\n'
+  mainCode += '}\n\n'
 
-    for (const info of dispatchLibInfos) {
-      mainCode += `static HMODULE g_cmd_mod_${info.libName} = NULL;\n`
-    }
-    if (dispatchLibInfos.length > 0) mainCode += '\n'
-
-    mainCode += 'extern "C" void yc_invoke_support_cmd(const char* libName, int cmdIndex, YC_MDATA_INF* pRetData, int argCount, YC_MDATA_INF* pArgs) {\n'
-    mainCode += '    if (!libName || cmdIndex < 0) return;\n'
-    mainCode += '    YC_PFN_EXECUTE_CMD fn = NULL;\n'
-    for (const info of dispatchLibInfos) {
-      const fnePathEscaped = escapeCString(info.lib.fnePath).replace(/"/g, '\\"')
-      const notifyExport = `${info.libName}_ProcessNotifyLib_${info.libName}`
-      mainCode += `    if (strcmp(libName, "${info.libName}") == 0) {\n`
-      mainCode += `        if (!g_cmd_mod_${info.libName}) g_cmd_mod_${info.libName} = LoadLibraryW(L"${fnePathEscaped}");\n`
-      mainCode += `        fn = yc_resolve_cmd_from_module(g_cmd_mod_${info.libName}, "${notifyExport}", cmdIndex);\n`
-      mainCode += '    }\n'
-      mainCode += '    else '
-    }
-    if (dispatchLibInfos.length > 0) {
-      mainCode += '{ }\n'
-    }
-    mainCode += '    if (!fn) return;\n'
-    mainCode += '    fn(pRetData, argCount, pArgs);\n'
-    mainCode += '}\n\n'
+  for (const info of dispatchLibInfos) {
+    mainCode += `static HMODULE g_cmd_mod_${info.libName} = NULL;\n`
   }
+  if (dispatchLibInfos.length > 0) mainCode += '\n'
+
+  mainCode += 'extern "C" void yc_invoke_support_cmd(const char* libName, int cmdIndex, YC_MDATA_INF* pRetData, int argCount, YC_MDATA_INF* pArgs) {\n'
+  mainCode += '    if (!libName || cmdIndex < 0) return;\n'
+  mainCode += '    YC_PFN_EXECUTE_CMD fn = NULL;\n'
+  for (const info of dispatchLibInfos) {
+    const libPathEscaped = escapeCString(info.lib.libraryPath).replace(/"/g, '\\"')
+    const notifyExport = `${info.libName}_ProcessNotifyLib_${info.libName}`
+    mainCode += `    if (strcmp(libName, "${info.libName}") == 0) {\n`
+    mainCode += `        if (!g_cmd_mod_${info.libName}) g_cmd_mod_${info.libName} = LoadLibraryW(L"${libPathEscaped}");\n`
+    mainCode += `        fn = yc_resolve_cmd_from_module(g_cmd_mod_${info.libName}, "${notifyExport}", cmdIndex);\n`
+    mainCode += '    }\n'
+    mainCode += '    else '
+  }
+  if (dispatchLibInfos.length > 0) {
+    mainCode += '{ }\n'
+  }
+  mainCode += '    if (!fn) return;\n'
+  mainCode += '    fn(pRetData, argCount, pArgs);\n'
+  mainCode += '}\n\n'
 
   if (isWindowsApp) {
     // 查找启动窗口文件
@@ -1906,21 +2028,7 @@ function generateMainC(
     mainCode += `static int g_nHeight = ${winInfo.height};\n`
     mainCode += 'static HINSTANCE g_hInstance;\n'
     mainCode += 'static HWND g_hMainWnd = NULL;\n\n'
-    // 在全局区生成窗口组件库初始化函数的 extern "C" 声明（仅静态编译模式，跳过系统核心库）
-    {
-      const arch = project.platform === 'x86' ? 'x86' : 'x64'
-      for (const lib of librariesForBuild) {
-        if (libraryManager.isCore(lib.name)) continue
-        const info = libraryManager.getLibInfo(lib.name)
-        if (!info || !info.windowUnits || info.windowUnits.length === 0) continue
-        if (linkMode !== 'static') continue  // 普通编译走 .fne 动态加载，不需要声明
-        const staticLib = libraryManager.findStaticLib(lib.name, arch)
-        if (staticLib) {
-          mainCode += `extern "C" BOOL ${lib.name}_Init(HINSTANCE);\n`
-        }
-      }
-      mainCode += '\n'
-    }
+    mainCode += '\n'
 
     // 控件ID
     if (winInfo.controls.length > 0) {
@@ -2286,22 +2394,14 @@ function generateMainC(
     mainCode += '        }\n'
     mainCode += '    }\n'
     mainCode += '    g_hInstance = hInstance;\n'
-    // 初始化有窗口组件的支持库（跳过系统核心库）
+    // 初始化有窗口组件的支持库（按配置加载动态模块）
     {
-      const arch = project.platform === 'x86' ? 'x86' : 'x64'
       for (const lib of librariesForBuild) {
         if (libraryManager.isCore(lib.name)) continue
         const info = libraryManager.getLibInfo(lib.name)
         if (!info || !info.windowUnits || info.windowUnits.length === 0) continue
-        const staticLib = libraryManager.findStaticLib(lib.name, arch)
-        if (linkMode === 'static' && staticLib) {
-          // 静态编译：直接调用（声明已在全局区生成）
-          mainCode += `    ${lib.name}_Init(hInstance);\n`
-        } else {
-          // 普通/调试编译：用绝对路径直接加载 IDE lib 目录中的 .fne，DllMain 自动注册窗口类
-          const fnePath = lib.fnePath.replace(/\\/g, '\\\\')
-          mainCode += `    LoadLibraryW(L"${fnePath}");\n`
-        }
+        const libraryPath = lib.libraryPath.replace(/\\/g, '\\\\')
+        mainCode += `    LoadLibraryW(L"${libraryPath}");\n`
       }
     }
     mainCode += '    WNDCLASSEXW wcex;\n'
@@ -2473,6 +2573,16 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
       return result
     }
 
+    const signatureErrors = validateProjectCommandSignatures(project, editorFiles)
+    if (signatureErrors.length > 0) {
+      for (const message of signatureErrors) {
+        sendMessage({ type: 'error', text: message })
+      }
+      result.errorCount += signatureErrors.length
+      result.elapsedMs = Date.now() - startTime
+      return result
+    }
+
     sendMessage({ type: 'info', text: `正在编译项目: ${project.projectName}` })
 
     // 确定架构：优先使用工具栏选择的架构，其次是项目文件中的配置
@@ -2481,11 +2591,18 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
     // 查找编译器
     const clangPath = findClangCompiler()
     if (!clangPath) {
-      sendMessage({ type: 'error', text: '错误: 找不到 Clang 编译器\n请确保 compiler\\llvm\\bin 目录下有 clang.exe' })
+      sendMessage({ type: 'error', text: '错误: 找不到 Clang 编译器\n请确保 compiler/llvm/bin 目录下有 clang（Windows 可为 clang.exe）' })
       result.errorCount++
       return result
     }
     sendMessage({ type: 'info', text: `编译器: ${clangPath}` })
+
+    const lldLinkPath = findToolNearClang(clangPath, 'lld-link')
+    if (!lldLinkPath) {
+      sendMessage({ type: 'error', text: '错误: 找不到 lld-link\n请确保 compiler/llvm/bin 目录下有 lld-link（Windows 可为 lld-link.exe）' })
+      result.errorCount++
+      return result
+    }
 
     // 查找 MSVC SDK
     const sdk = findMSVCSDK(arch)
@@ -2502,30 +2619,22 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
     mkdirSync(outputDir, { recursive: true })
 
     // ========== 支持库链接 ==========
-    const linkMode = options.linkMode || 'normal'
-    const preferDynamicInNormal = linkMode !== 'static' && !!options.debug
     const loadedLibs = libraryManager.getLoadedLibraryFiles()
     const usedLibraryNames = collectUsedLibraryFileNames(project, editorFiles)
     const genericFallbackLibraryNames = collectGenericFallbackLibraryFileNames(project, editorFiles)
     const libsToLink = loadedLibs.filter(l => usedLibraryNames.has(l.name))
-    sendMessage({ type: 'info', text: `编译模式: ${linkMode === 'static' ? '静态编译' : '普通编译'}` })
+    sendMessage({ type: 'info', text: '编译模式: 普通编译' })
 
     // 仅对“本次会静态链接”的支持库生成命令分发表引用，避免动态路径下出现未定义符号。
     const staticCmdDispatchLibs: string[] = []
     for (const lib of libsToLink) {
-      const staticLib = libraryManager.findStaticLib(lib.name, arch)
       if (!genericFallbackLibraryNames.has(lib.name)) continue
-      if (linkMode === 'static') {
-        if (!staticLib) continue
-        staticCmdDispatchLibs.push(lib.name)
-        continue
-      }
       staticCmdDispatchLibs.push(lib.name)
     }
 
     // 生成C++代码
     sendMessage({ type: 'info', text: '正在生成C++代码...' })
-    const additionalCFiles = generateMainC(project, tempDir, editorFiles, linkMode, libsToLink, staticCmdDispatchLibs)
+    const additionalCFiles = generateMainC(project, tempDir, editorFiles, libsToLink, staticCmdDispatchLibs)
     const outputName = project.projectName
     const outputExe = join(outputDir, outputName + '.exe')
     const mainC = join(tempDir, 'main.cpp')
@@ -2557,9 +2666,6 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
       sendMessage({ type: 'info', text: `已加载 ${loadedLibs.length} 个支持库，实际使用 ${libsToLink.length} 个，正在处理链接依赖...` })
     }
 
-    let linkFailed = false
-    const fnesToCopy: Array<{ name: string; fnePath: string; libName: string }> = []
-
     for (const lib of libsToLink) {
       const staticLib = libraryManager.findStaticLib(lib.name, arch)
 
@@ -2569,46 +2675,12 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
       }
       const extraDeps = (staticLib && winUnitExtraDeps[lib.name]) ? winUnitExtraDeps[lib.name] : []
 
-      if (linkMode === 'static') {
-        // 静态编译：只使用 .lib，没有则报错
-        if (staticLib) {
-          args.push(staticLib, ...extraDeps)
-          sendMessage({ type: 'info', text: `  ✓ ${lib.libName} (${lib.name}) - 静态链接: ${basename(staticLib)}` })
-        } else {
-          sendMessage({ type: 'error', text: `错误: 支持库「${lib.libName}」(${lib.name}) 没有静态库(.lib)，无法进行静态编译` })
-          result.errorCount++
-          linkFailed = true
-        }
+      if (staticLib) {
+        args.push(staticLib, ...extraDeps)
+        sendMessage({ type: 'info', text: `  ✓ ${lib.libName} (${lib.name}) - 静态链接: ${basename(staticLib)}` })
       } else {
-        // 普通编译：调试运行优先动态加载支持库，避免调试态仍走静态链接。
-        if (preferDynamicInNormal) {
-          sendMessage({ type: 'info', text: `  ✓ ${lib.libName} (${lib.name}) - 动态加载: ${lib.name}.fne` })
-          continue
-        }
-
-        // 普通编译（非调试）：优先 .lib，没有则复制 .fne 到输出目录
-        if (staticLib) {
-          // 有窗口组件的库（如 ycui）在普通编译下走 .fne 动态加载，避免引入额外系统 .lib 依赖
-          const info = libraryManager.getLibInfo(lib.name)
-          const hasWinUnit = info?.windowUnits && info.windowUnits.length > 0
-          if (hasWinUnit) {
-            // 普通编译时窗口组件库用绝对路径 LoadLibraryW，无需复制
-            sendMessage({ type: 'info', text: `  ✓ ${lib.libName} (${lib.name}) - 动态加载: ${lib.name}.fne` })
-          } else {
-            args.push(staticLib)
-            sendMessage({ type: 'info', text: `  ✓ ${lib.libName} (${lib.name}) - 静态链接: ${basename(staticLib)}` })
-          }
-        } else {
-          fnesToCopy.push(lib)
-          sendMessage({ type: 'info', text: `  ○ ${lib.libName} (${lib.name}) - 动态依赖，将复制 .fne 到输出目录` })
-        }
+        sendMessage({ type: 'warning', text: `  ○ ${lib.libName} (${lib.name}) - 未找到静态库，跳过链接` })
       }
-    }
-
-    if (linkFailed) {
-      sendMessage({ type: 'error', text: '静态编译失败: 缺少必要的静态库文件' })
-      result.elapsedMs = Date.now() - startTime
-      return result
     }
 
     // 目标架构
@@ -2619,7 +2691,7 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
     }
 
     // 链接器
-    args.push('-fuse-ld=lld-link')
+    args.push(`-fuse-ld=${lldLinkPath}`)
 
     // MSVC SDK 路径
     args.push(
@@ -2707,8 +2779,8 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
 
     // strip（非调试模式）
     if (!options.debug) {
-      const stripPath = join(dirname(clangPath), 'llvm-strip.exe')
-      if (existsSync(stripPath)) {
+      const stripPath = findToolNearClang(clangPath, 'llvm-strip')
+      if (stripPath && existsSync(stripPath)) {
         await new Promise<void>((resolve) => {
           execFile(stripPath, ['--strip-all', outputExe], () => resolve())
         })
@@ -2721,21 +2793,6 @@ export async function compileProject(options: CompileOptions, editorFiles?: Map<
 
     sendMessage({ type: 'success', text: `编译成功 (${result.elapsedMs} 毫秒)` })
     sendMessage({ type: 'info', text: `输出文件: ${outputExe}` })
-
-    // 普通编译模式: 复制动态依赖的 .fne 到输出目录的 lib 子目录
-    if (fnesToCopy.length > 0) {
-      const libOutputDir = join(outputDir, 'lib')
-      mkdirSync(libOutputDir, { recursive: true })
-      for (const lib of fnesToCopy) {
-        const destPath = join(libOutputDir, basename(lib.fnePath))
-        try {
-          copyFileSync(lib.fnePath, destPath)
-          sendMessage({ type: 'info', text: `已复制动态支持库: ${basename(lib.fnePath)} -> lib/` })
-        } catch (e) {
-          sendMessage({ type: 'warning', text: `复制支持库失败: ${basename(lib.fnePath)} - ${e instanceof Error ? e.message : String(e)}` })
-        }
-      }
-    }
 
   } catch (e) {
     sendMessage({ type: 'error', text: `编译异常: ${e instanceof Error ? e.message : String(e)}` })

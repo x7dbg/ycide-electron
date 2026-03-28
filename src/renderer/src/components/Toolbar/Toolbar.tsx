@@ -13,7 +13,9 @@ interface ToolbarProps {
   hasProject?: boolean
   isCompiling?: boolean
   isRunning?: boolean
+  platform?: string
   arch?: string
+  onPlatformChange?: (platform: string) => void
   onArchChange?: (arch: string) => void
   onNew?: () => void
   onOpen?: () => void
@@ -22,10 +24,17 @@ interface ToolbarProps {
   onRedo?: () => void
 }
 
-function Toolbar({ runtimePlatform = 'windows', hasControlSelected = false, onAlign, onCompileRun, onStop, hasProject = false, isCompiling = false, isRunning = false, arch = 'x64', onArchChange, onNew, onOpen, onSave, onUndo, onRedo }: ToolbarProps): React.JSX.Element {
+function Toolbar({ runtimePlatform = 'windows', hasControlSelected = false, onAlign, onCompileRun, onStop, hasProject = false, isCompiling = false, isRunning = false, platform = 'windows', arch = 'x64', onPlatformChange, onArchChange, onNew, onOpen, onSave, onUndo, onRedo }: ToolbarProps): React.JSX.Element {
   const mod = getPrimaryModifierLabel(runtimePlatform)
   const redoShortcut = getRedoShortcutLabel(runtimePlatform)
   const runToCursorShortcut = `${mod}+F10`
+  const archOptions = platform === 'macos'
+    ? [{ value: 'arm64', label: 'arm64' }]
+    : [
+      { value: 'x64', label: 'x64' },
+      { value: 'x86', label: 'x86' },
+      { value: 'arm64', label: 'arm64' },
+    ]
 
   return (
     <div className="toolbar" role="toolbar" aria-label="工具栏">
@@ -57,13 +66,26 @@ function Toolbar({ runtimePlatform = 'windows', hasControlSelected = false, onAl
       <div className="toolbar-group">
         <select
           className="toolbar-select"
+          value={platform}
+          onChange={e => onPlatformChange?.(e.target.value)}
+          title="目标平台"
+        >
+          <option value="windows">Windows</option>
+          <option value="macos">macOS</option>
+          <option value="linux">Linux</option>
+        </select>
+      </div>
+
+      <div className="toolbar-group">
+        <select
+          className="toolbar-select"
           value={arch}
           onChange={e => onArchChange?.(e.target.value)}
           title="目标架构"
         >
-          <option value="x64">x64</option>
-          <option value="x86">x86</option>
-          <option value="arm64">arm64</option>
+          {archOptions.map(option => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
         </select>
       </div>
 

@@ -27,6 +27,30 @@ type RecentOpenedItem = {
 const RECENT_OPENED_KEY = 'ycide.recentOpened.v1'
 const MAX_RECENT_OPENED = 10
 
+type TargetPlatform = 'windows' | 'macos' | 'linux'
+type TargetArch = 'x64' | 'x86' | 'arm64'
+
+function normalizeTargetPlatform(value?: string | null): TargetPlatform {
+  const normalized = (value || '').trim().toLowerCase()
+  if (normalized === 'macos' || normalized === 'darwin' || normalized === 'mac' || normalized === 'osx') return 'macos'
+  if (normalized === 'linux') return 'linux'
+  if (normalized === 'windows' || normalized === 'win32') return 'windows'
+  if (normalized === 'x64' || normalized === 'x86' || normalized === 'arm64') return 'windows'
+  return 'windows'
+}
+
+function normalizeTargetArch(value?: string | null): TargetArch {
+  const normalized = (value || '').trim().toLowerCase()
+  if (normalized === 'x86') return 'x86'
+  if (normalized === 'arm64') return 'arm64'
+  return 'x64'
+}
+
+function coerceArchByPlatform(platform: TargetPlatform, arch: TargetArch): TargetArch {
+  if (platform === 'macos') return 'arm64'
+  return arch
+}
+
 function normalizeResourceTableContent(raw: string): string {
   const nonEmptyLines = raw
     .replace(/\r\n/g, '\n')
@@ -87,7 +111,8 @@ function App(): React.JSX.Element {
   const [isCompiling, setIsCompiling] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
   const [forceOutputTab, setForceOutputTab] = useState<'compile' | 'problems' | null>(null)
-  const [targetArch, setTargetArch] = useState('x64')
+  const [targetPlatform, setTargetPlatform] = useState<TargetPlatform>('windows')
+  const [targetArch, setTargetArch] = useState<TargetArch>('x64')
   const [recentOpened, setRecentOpened] = useState<RecentOpenedItem[]>([])
 
   const pushRecentOpened = useCallback((item: RecentOpenedItem) => {
@@ -223,30 +248,10 @@ function App(): React.JSX.Element {
     setShowOutput(true)
     setForceOutputTab('compile')
     const editorFiles = editorRef.current?.getEditorFiles()
-    await window.api.compiler.compile(currentProjectDir, editorFiles, 'normal', targetArch)
+    await window.api.compiler.compile(currentProjectDir, editorFiles, targetArch)
     setIsCompiling(false)
     setForceOutputTab(null)
   }, [currentProjectDir, isCompiling, targetArch, fileProblems, designProblems])
-
-  // 静态编译
-  const handleCompileStatic = useCallback(async () => {
-    if (!currentProjectDir || isCompiling) return
-    if (fileProblems.length > 0 || designProblems.length > 0) {
-      setShowOutput(true)
-      setForceOutputTab('problems')
-      setTimeout(() => setForceOutputTab(null), 100)
-      return
-    }
-    setIsCompiling(true)
-    editorRef.current?.save()
-    setOutputMessages([])
-    setShowOutput(true)
-    setForceOutputTab('compile')
-    const editorFiles = editorRef.current?.getEditorFiles()
-    await window.api.compiler.compile(currentProjectDir, editorFiles, 'static', targetArch)
-    setIsCompiling(false)
-    setForceOutputTab(null)
-  }, [currentProjectDir, isCompiling, fileProblems, designProblems])
 
   // 停止运行
   const handleStop = useCallback(() => {
@@ -740,7 +745,9 @@ function App(): React.JSX.Element {
     if (!eppInfo) return false
     const dir = getDirName(eppPath)
     setCurrentProjectDir(dir)
-    if (eppInfo.platform) setTargetArch(eppInfo.platform)
+    const normalizedPlatform = normalizeTargetPlatform(eppInfo.platform)
+    setTargetPlatform(normalizedPlatform)
+    setTargetArch(prev => coerceArchByPlatform(normalizedPlatform, normalizeTargetArch(eppInfo.platform) || prev))
     setProjectTree(await buildProjectTreeFromEpp(eppInfo.projectName, eppInfo.files, dir))
 
     const session = await window.api?.project?.loadOpenTabs(dir)
@@ -1237,7 +1244,7 @@ function App(): React.JSX.Element {
         }
         break
     }
-  }, [openProjectByEppPath, openFileByPath, extractSubroutineNodes, extractGlobalVarNodes, extractConstantNodes, extractDataTypeNodes, extractDllCommandNodes, applyTheme, handleCompile, handleCompileStatic, handleCompileRun, handleStop, handleAppClose, joinPath, projectTree, refreshProjectTree])
+  }, [openProjectByEppPath, openFileByPath, extractSubroutineNodes, extractGlobalVarNodes, extractConstantNodes, extractDataTypeNodes, extractDllCommandNodes, applyTheme, handleCompile, handleCompileRun, handleStop, handleAppClose, joinPath, projectTree, refreshProjectTree])
 
   useEffect(() => {
     const handleNativeMenuAction = (action: unknown) => {
@@ -1265,7 +1272,9 @@ function App(): React.JSX.Element {
       if (!result) return
 
       setCurrentProjectDir(result.projectDir)
-      if (info.platform) setTargetArch(info.platform)
+      const normalizedPlatform = normalizeTargetPlatform(info.platform)
+      setTargetPlatform(normalizedPlatform)
+      setTargetArch(coerceArchByPlatform(normalizedPlatform, normalizeTargetArch(info.platform)))
 
       // 通过解析 epp 文件获取所有关联文件并构建项目树
       const eppInfo = await window.api?.project?.parseEpp(result.eppPath)
@@ -1443,10 +1452,18 @@ function App(): React.JSX.Element {
         hasProject={!!currentProjectDir}
         isCompiling={isCompiling}
         isRunning={isRunning}
+        platform={targetPlatform}
         arch={targetArch}
+        onPlatformChange={(platform: string) => {
+          const normalizedPlatform = normalizeTargetPlatform(platform)
+          setTargetPlatform(normalizedPlatform)
+          setTargetArch(prev => coerceArchByPlatform(normalizedPlatform, prev))
+          if (currentProjectDir) window.api?.project?.updatePlatform(currentProjectDir, normalizedPlatform)
+        }}
         onArchChange={(arch: string) => {
-          setTargetArch(arch)
-          if (currentProjectDir) window.api?.project?.updatePlatform(currentProjectDir, arch)
+          const normalizedArch = normalizeTargetArch(arch)
+          const coercedArch = coerceArchByPlatform(targetPlatform, normalizedArch)
+          setTargetArch(coercedArch)
         }}
         onNew={() => handleMenuAction('file:newProject')}
         onOpen={() => handleMenuAction('file:openProject')}

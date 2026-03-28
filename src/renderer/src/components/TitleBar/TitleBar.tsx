@@ -91,7 +91,6 @@ function buildMenus(runtimePlatform: RuntimePlatform, hasProject: boolean, hasOp
     ]},
     { label: '编译(B)', items: [
       { label: '普通编译(C)', shortcut: `${mod}+F7`, action: 'build:compile', disabled: np },
-      { label: '静态编译(S)', action: 'build:compile-static', disabled: np },
       { label: '', divider: true },
       { label: '编译运行(R)', shortcut: 'F5', action: 'build:run', disabled: np },
     ]},

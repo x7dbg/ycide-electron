@@ -67,8 +67,8 @@ const api = {
   },
   // 编译
   compiler: {
-    compile: (projectDir: string, editorFiles?: Record<string, string>, linkMode?: 'static' | 'normal', arch?: string) =>
-      ipcRenderer.invoke('compiler:compile', projectDir, editorFiles, linkMode, arch),
+    compile: (projectDir: string, editorFiles?: Record<string, string>, arch?: string) =>
+      ipcRenderer.invoke('compiler:compile', projectDir, editorFiles, arch),
     run: (projectDir: string, editorFiles?: Record<string, string>, arch?: string) =>
       ipcRenderer.invoke('compiler:run', projectDir, editorFiles, arch),
     stop: () => ipcRenderer.invoke('compiler:stop'),
@@ -86,6 +86,23 @@ const api = {
     getAllCommands: () => ipcRenderer.invoke('library:getAllCommands'),
     getAllDataTypes: () => ipcRenderer.invoke('library:getAllDataTypes'),
     getWindowUnits: () => ipcRenderer.invoke('library:getWindowUnits'),
+  },
+  // 命令元数据（ycmd）
+  ycmd: {
+    scan: (rootPath?: string) => ipcRenderer.invoke('ycmd:scan', rootPath) as Promise<{
+      rootPath: string
+      libraries: Array<{
+        name: string
+        folderPath: string
+        manifests: Array<{
+          filePath: string
+          manifest: unknown
+          valid: boolean
+          errors: string[]
+        }>
+      }>
+      errors: string[]
+    }>,
   },
   // 主题管理
   theme: {

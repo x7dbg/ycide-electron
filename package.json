@@ -42,10 +42,6 @@
         "to": "lib"
       },
       {
-        "from": "static_lib",
-        "to": "static_lib"
-      },
-      {
         "from": "themes",
         "to": "themes"
       }
@@ -84,7 +80,6 @@
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "iconv-lite": "^0.7.2",
-    "koffi": "^2.15.1",
     "monaco-editor": "^0.55.1",
     "pinyin-pro": "^3.28.0",
     "react": "^19.0.0",
