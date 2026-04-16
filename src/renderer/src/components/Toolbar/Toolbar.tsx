@@ -112,10 +112,13 @@ function Toolbar({
       <div className="toolbar-separator" aria-hidden="true" />
 
       <div className="toolbar-group">
+        <label className="toolbar-select-label" htmlFor="toolbar-platform-select">平台</label>
         <select
+          id="toolbar-platform-select"
           className="toolbar-select"
           value={platform}
           onChange={e => onPlatformChange?.(e.target.value)}
+          aria-label="目标平台"
           title="目标平台"
         >
           <option value="windows">Windows</option>
@@ -125,10 +128,13 @@ function Toolbar({
       </div>
 
       <div className="toolbar-group">
+        <label className="toolbar-select-label" htmlFor="toolbar-arch-select">架构</label>
         <select
+          id="toolbar-arch-select"
           className="toolbar-select"
           value={arch}
           onChange={e => onArchChange?.(e.target.value)}
+          aria-label="目标架构"
           title="目标架构"
         >
           {archOptions.map(option => (

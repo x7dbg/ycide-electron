@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useId, useRef } from 'react'
 import './NewProjectDialog.css'
 
 interface ProjectType {
@@ -37,6 +37,12 @@ function NewProjectDialog({ open, onClose, onConfirm }: NewProjectDialogProps): 
   const [projectPath, setProjectPath] = useState('')
   const [selectedType, setSelectedType] = useState('windows-app')
   const [selectedPlatform, setSelectedPlatform] = useState('windows')
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const lastFocusedRef = useRef<HTMLElement | null>(null)
+  const titleId = useId()
+  const descriptionId = useId()
+  const nameInputId = useId()
+  const pathInputId = useId()
 
   // 打开时获取默认项目路径
   useEffect(() => {
@@ -44,6 +50,14 @@ function NewProjectDialog({ open, onClose, onConfirm }: NewProjectDialogProps): 
       window.api?.project?.getDefaultPath?.().then((p: string) => {
         if (p) setProjectPath(p)
       })
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    lastFocusedRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    return () => {
+      lastFocusedRef.current?.focus()
     }
   }, [open])
 
@@ -65,27 +79,70 @@ function NewProjectDialog({ open, onClose, onConfirm }: NewProjectDialogProps): 
   }
 
   const handleKeyDown = (e: React.KeyboardEvent): void => {
-    if (e.key === 'Escape') onClose()
-    if (e.key === 'Enter') handleConfirm()
+    if (e.key === 'Escape') {
+      onClose()
+      return
+    }
+
+    if (e.key === 'Enter') {
+      handleConfirm()
+      return
+    }
+
+    if (e.key !== 'Tab') return
+    const root = dialogRef.current
+    if (!root) return
+    const focusable = root.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+    )
+    if (!focusable.length) return
+
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    const current = document.activeElement
+
+    if (e.shiftKey && current === first) {
+      e.preventDefault()
+      last.focus()
+      return
+    }
+
+    if (!e.shiftKey && current === last) {
+      e.preventDefault()
+      first.focus()
+    }
   }
 
   return (
     <div className="np-dialog-overlay" onMouseDown={onClose}>
-      <div className="np-dialog" onMouseDown={(e) => e.stopPropagation()} onKeyDown={handleKeyDown}>
+      <div
+        ref={dialogRef}
+        className="np-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        onMouseDown={(e) => e.stopPropagation()}
+        onKeyDown={handleKeyDown}
+      >
         <div className="np-dialog-header">
-          <span className="np-dialog-title">新建项目</span>
+          <span id={titleId} className="np-dialog-title">新建项目</span>
           <button className="np-dialog-close" onClick={onClose} aria-label="关闭">&times;</button>
         </div>
 
         <div className="np-dialog-body">
+          <p id={descriptionId} className="sr-only">设置项目平台、类型、名称和保存路径，然后确认创建项目。</p>
           {/* 目标平台 */}
           <div className="np-field">
-            <label>目标平台：</label>
-            <div className="np-platform-row">
+            <span className="np-field-label">目标平台：</span>
+            <div className="np-platform-row" role="radiogroup" aria-label="目标平台">
               {PLATFORMS.map(p => (
                 <button
                   key={p.id}
+                  type="button"
                   className={`np-platform-btn ${selectedPlatform === p.id ? 'selected' : ''}`}
+                  role="radio"
+                  aria-checked={selectedPlatform === p.id}
                   onClick={() => setSelectedPlatform(p.id)}
                 >
                   <span>{p.icon}</span>
@@ -97,12 +154,15 @@ function NewProjectDialog({ open, onClose, onConfirm }: NewProjectDialogProps): 
 
           {/* 项目类型 */}
           <div className="np-field">
-            <label>项目类型：</label>
-            <div className="np-type-list">
+            <span className="np-field-label">项目类型：</span>
+            <div className="np-type-list" role="radiogroup" aria-label="项目类型">
               {PROJECT_TYPES.map(t => (
                 <button
                   key={t.id}
+                  type="button"
                   className={`np-type-item ${selectedType === t.id ? 'selected' : ''}`}
+                  role="radio"
+                  aria-checked={selectedType === t.id}
                   onClick={() => setSelectedType(t.id)}
                 >
                   <span className="np-type-icon">{t.icon}</span>
@@ -117,8 +177,9 @@ function NewProjectDialog({ open, onClose, onConfirm }: NewProjectDialogProps): 
 
           {/* 项目名称 */}
           <div className="np-field">
-            <label>项目名称：</label>
+            <label htmlFor={nameInputId}>项目名称：</label>
             <input
+              id={nameInputId}
               type="text"
               value={projectName}
               onChange={(e) => setProjectName(e.target.value)}
@@ -129,25 +190,26 @@ function NewProjectDialog({ open, onClose, onConfirm }: NewProjectDialogProps): 
 
           {/* 项目路径 */}
           <div className="np-field">
-            <label>项目路径：</label>
+            <label htmlFor={pathInputId}>项目路径：</label>
             <div className="np-path-row">
               <input
+                id={pathInputId}
                 type="text"
                 value={projectPath}
                 onChange={(e) => setProjectPath(e.target.value)}
                 placeholder="选择项目保存位置..."
                 spellCheck={false}
               />
-              <button onClick={handleBrowse}>浏览...</button>
+              <button type="button" onClick={handleBrowse} aria-label="浏览项目保存位置">浏览...</button>
             </div>
           </div>
         </div>
 
         <div className="np-dialog-footer">
-          <button className="np-btn np-btn-primary" onClick={handleConfirm} disabled={!projectName.trim()}>
+          <button type="button" className="np-btn np-btn-primary" onClick={handleConfirm} disabled={!projectName.trim()} aria-label="确认创建项目">
             确定
           </button>
-          <button className="np-btn np-btn-secondary" onClick={onClose}>
+          <button type="button" className="np-btn np-btn-secondary" onClick={onClose} aria-label="取消创建项目">
             取消
           </button>
         </div>

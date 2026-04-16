@@ -2930,7 +2930,7 @@ function App(): React.JSX.Element {
         onRedo={() => handleMenuAction('edit:redo')}
       />
       <div className={`app-body${isWorkspaceEmpty ? ' app-body-empty-workspace' : ''}`}>
-        <aside className="activity-bar" aria-label="主活动栏">
+        <aside className="activity-bar" role="navigation" aria-label="主活动栏">
           <button
             type="button"
             className="activity-button"

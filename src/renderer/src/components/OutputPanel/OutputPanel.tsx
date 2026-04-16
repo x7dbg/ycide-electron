@@ -68,10 +68,16 @@ interface OutputPanelProps {
 }
 
 function OutputPanel({ height, onResize, onClose, messages = [], commandDetail, highlightParamIndex, problems = [], debugPause = null, debugDisplayLine = null, isDebugPaused = false, onDebugContinue, forceTab, onProblemClick }: OutputPanelProps): React.JSX.Element {
+  const OUTPUT_MIN_HEIGHT = 100
+  const OUTPUT_MAX_HEIGHT = 500
+  const OUTPUT_RESIZE_STEP = 16
   const contentRef = useRef<HTMLDivElement>(null)
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const problemRowRefs = useRef<Array<HTMLDivElement | null>>([])
   const [activeTab, setActiveTab] = useState<OutputTab>('compile')
   const [flashProblemIndex, setFlashProblemIndex] = useState<number>(-1)
   const [debugFilter, setDebugFilter] = useState('')
+  const [focusedProblemIndex, setFocusedProblemIndex] = useState(0)
 
   // 外部强制切换标签（编译/运行时自动切到编译输出）
   useEffect(() => {
@@ -94,6 +100,15 @@ function OutputPanel({ height, onResize, onClose, messages = [], commandDetail, 
   }, [commandDetail])
 
   useEffect(() => {
+    if (activeTab !== 'problems') return
+    if (problems.length === 0) {
+      setFocusedProblemIndex(0)
+      return
+    }
+    setFocusedProblemIndex(prev => Math.min(prev, problems.length - 1))
+  }, [activeTab, problems.length])
+
+  useEffect(() => {
     setDebugFilter('')
   }, [debugPause?.file, debugPause?.line])
 
@@ -110,7 +125,7 @@ function OutputPanel({ height, onResize, onClose, messages = [], commandDetail, 
     const startHeight = height
 
     const handleMouseMove = (e: MouseEvent) => {
-      const newHeight = Math.max(100, Math.min(500, startHeight - (e.clientY - startY)))
+      const newHeight = Math.max(OUTPUT_MIN_HEIGHT, Math.min(OUTPUT_MAX_HEIGHT, startHeight - (e.clientY - startY)))
       onResize(newHeight)
     }
 
@@ -125,7 +140,32 @@ function OutputPanel({ height, onResize, onClose, messages = [], commandDetail, 
     document.body.style.userSelect = 'none'
     document.addEventListener('mousemove', handleMouseMove)
     document.addEventListener('mouseup', handleMouseUp)
-  }, [height, onResize])
+  }, [height, onResize, OUTPUT_MAX_HEIGHT, OUTPUT_MIN_HEIGHT])
+
+  const handleResizerKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      onResize(Math.min(OUTPUT_MAX_HEIGHT, height + OUTPUT_RESIZE_STEP))
+      return
+    }
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      onResize(Math.max(OUTPUT_MIN_HEIGHT, height - OUTPUT_RESIZE_STEP))
+      return
+    }
+
+    if (event.key === 'Home') {
+      event.preventDefault()
+      onResize(OUTPUT_MIN_HEIGHT)
+      return
+    }
+
+    if (event.key === 'End') {
+      event.preventDefault()
+      onResize(OUTPUT_MAX_HEIGHT)
+    }
+  }, [height, onResize, OUTPUT_MAX_HEIGHT, OUTPUT_MIN_HEIGHT, OUTPUT_RESIZE_STEP])
 
   const filteredDebugVariables = (() => {
     if (!debugPause) return []
@@ -134,64 +174,155 @@ function OutputPanel({ height, onResize, onClose, messages = [], commandDetail, 
     return debugPause.variables.filter(variable => variable.name.toLowerCase().includes(keyword))
   })()
 
+  const buildProblemAriaLabel = (problem: FileProblem): string => {
+    const severityText = problem.severity === 'error' ? '错误' : '警告'
+    const fileText = problem.file ? `，文件 ${problem.file}` : ''
+    const locationText = (problem.line > 0 || problem.column > 0)
+      ? `，第 ${problem.line} 行，第 ${problem.column} 列`
+      : '，设计时问题'
+    return `${severityText}${fileText}${locationText}，${problem.message}`
+  }
+
+  const handleProblemRowKeyDown = (event: React.KeyboardEvent<HTMLDivElement>, index: number, problem: FileProblem): void => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      onProblemClick?.(problem)
+      return
+    }
+
+    if (!problems.length) return
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      const next = Math.min(index + 1, problems.length - 1)
+      setFocusedProblemIndex(next)
+      problemRowRefs.current[next]?.focus()
+      return
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      const prev = Math.max(index - 1, 0)
+      setFocusedProblemIndex(prev)
+      problemRowRefs.current[prev]?.focus()
+      return
+    }
+
+    if (event.key === 'Home') {
+      event.preventDefault()
+      setFocusedProblemIndex(0)
+      problemRowRefs.current[0]?.focus()
+      return
+    }
+
+    if (event.key === 'End') {
+      event.preventDefault()
+      const last = problems.length - 1
+      setFocusedProblemIndex(last)
+      problemRowRefs.current[last]?.focus()
+    }
+  }
+
+  const tabs: Array<{ id: OutputTab; label: string }> = [
+    { id: 'compile', label: '输出' },
+    { id: 'terminal', label: '终端' },
+    { id: 'hint', label: '提示' },
+    { id: 'problems', label: `问题${problems.length > 0 ? ` (${problems.length})` : ''}` },
+    { id: 'debug', label: `调试${isDebugPaused ? ' (暂停)' : ''}` },
+  ]
+
+  const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, tabId: OutputTab): void => {
+    const currentIndex = tabs.findIndex(tab => tab.id === tabId)
+    if (currentIndex < 0) return
+
+    if (event.key === 'ArrowRight') {
+      event.preventDefault()
+      const nextIndex = (currentIndex + 1) % tabs.length
+      const nextTab = tabs[nextIndex]
+      setActiveTab(nextTab.id)
+      tabRefs.current[nextIndex]?.focus()
+      return
+    }
+
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault()
+      const prevIndex = (currentIndex - 1 + tabs.length) % tabs.length
+      const prevTab = tabs[prevIndex]
+      setActiveTab(prevTab.id)
+      tabRefs.current[prevIndex]?.focus()
+      return
+    }
+
+    if (event.key === 'Home') {
+      event.preventDefault()
+      setActiveTab(tabs[0].id)
+      tabRefs.current[0]?.focus()
+      return
+    }
+
+    if (event.key === 'End') {
+      event.preventDefault()
+      const lastIndex = tabs.length - 1
+      setActiveTab(tabs[lastIndex].id)
+      tabRefs.current[lastIndex]?.focus()
+    }
+  }
+
   return (
     <div className="output-panel" style={{ height: `${height}px` }} role="region" aria-label="输出面板">
-      <div className="output-resizer" onMouseDown={handleMouseDown} role="separator" aria-orientation="horizontal" />
+      <div
+        className="output-resizer"
+        onMouseDown={handleMouseDown}
+        onKeyDown={handleResizerKeyDown}
+        role="separator"
+        aria-label="调整输出面板高度"
+        aria-orientation="horizontal"
+        aria-valuemin={OUTPUT_MIN_HEIGHT}
+        aria-valuemax={OUTPUT_MAX_HEIGHT}
+        aria-valuenow={height}
+        tabIndex={0}
+      />
       <div className="output-header">
-        <div className="output-tabs" role="tablist">
-          <button
-            className={`output-tab ${activeTab === 'compile' ? 'active' : ''}`}
-            role="tab"
-            aria-selected={activeTab === 'compile'}
-            onClick={() => setActiveTab('compile')}
-          >输出</button>
-          <button
-            className={`output-tab ${activeTab === 'terminal' ? 'active' : ''}`}
-            role="tab"
-            aria-selected={activeTab === 'terminal'}
-            onClick={() => setActiveTab('terminal')}
-          >终端</button>
-          <button
-            className={`output-tab ${activeTab === 'hint' ? 'active' : ''}`}
-            role="tab"
-            aria-selected={activeTab === 'hint'}
-            onClick={() => setActiveTab('hint')}
-          >提示</button>
-          <button
-            className={`output-tab ${activeTab === 'problems' ? 'active' : ''}`}
-            role="tab"
-            aria-selected={activeTab === 'problems'}
-            onClick={() => setActiveTab('problems')}
-          >问题{problems.length > 0 ? ` (${problems.length})` : ''}</button>
-          <button
-            className={`output-tab ${activeTab === 'debug' ? 'active' : ''}`}
-            role="tab"
-            aria-selected={activeTab === 'debug'}
-            onClick={() => setActiveTab('debug')}
-          >调试{isDebugPaused ? ' (暂停)' : ''}</button>
+        <div className="output-tabs" role="tablist" aria-label="输出面板标签">
+          {tabs.map((tab, index) => (
+            <button
+              key={tab.id}
+              ref={(element) => { tabRefs.current[index] = element }}
+              id={`output-tab-${tab.id}`}
+              className={`output-tab ${activeTab === tab.id ? 'active' : ''}`}
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              aria-controls={`output-panel-${tab.id}`}
+              tabIndex={activeTab === tab.id ? 0 : -1}
+              onClick={() => setActiveTab(tab.id)}
+              onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
+            >{tab.label}</button>
+          ))}
         </div>
         <button className="output-close" onClick={onClose} aria-label="关闭输出面板">×</button>
       </div>
 
       {/* 编译输出内容 */}
       {activeTab === 'compile' && (
-        <div className="output-content" ref={contentRef} role="log" aria-live="polite" tabIndex={0}>
+        <div id="output-panel-compile" className="output-content" ref={contentRef} role="tabpanel" aria-labelledby="output-tab-compile" tabIndex={0}>
+          <div role="log" aria-live="polite" aria-atomic="false">
           {messages.map((msg, i) => (
             <div key={i} className={`output-line ${msg.type}`}>{msg.text}</div>
           ))}
+          </div>
         </div>
       )}
 
       {/* 终端内容（预留） */}
       {activeTab === 'terminal' && (
-        <div className="output-content output-terminal-content" tabIndex={0}>
+        <div id="output-panel-terminal" className="output-content output-terminal-content" role="tabpanel" aria-labelledby="output-tab-terminal" tabIndex={0}>
           <div className="output-terminal-empty">终端功能正在开发中</div>
         </div>
       )}
 
       {/* 提示内容（命令详情） */}
       {activeTab === 'hint' && (
-        <div className="output-content output-hint-content" tabIndex={0}>
+        <div id="output-panel-hint" className="output-content output-hint-content" role="tabpanel" aria-labelledby="output-tab-hint" tabIndex={0}>
           {commandDetail ? (() => {
             const cd = commandDetail
             const isSourceSubroutine = cd.category === '子程序' && cd.libraryName === '当前源码'
@@ -285,19 +416,25 @@ function OutputPanel({ height, onResize, onClose, messages = [], commandDetail, 
 
       {/* 问题列表 */}
       {activeTab === 'problems' && (
-        <div className="output-content output-problems-content" tabIndex={0}>
+        <div id="output-panel-problems" className="output-content output-problems-content" role="tabpanel" aria-labelledby="output-tab-problems" tabIndex={0}>
           {problems.length === 0 ? (
             <div className="output-problem-empty">当前文件没有问题</div>
           ) : (
             <>
-              <div className="output-problem-summary">共 {problems.length} 个问题</div>
+              <div className="output-problem-summary" role="status" aria-live="polite">共 {problems.length} 个问题</div>
               {problems.map((p, i) => (
                 <div
                   key={i}
+                  ref={(element) => { problemRowRefs.current[i] = element }}
                   className={`output-problem-row ${i === flashProblemIndex ? 'flash' : ''}`}
+                  role="button"
+                  tabIndex={i === focusedProblemIndex ? 0 : -1}
+                  aria-label={buildProblemAriaLabel(p)}
+                  onFocus={() => setFocusedProblemIndex(i)}
                   onClick={() => {
                     onProblemClick?.(p)
                   }}
+                  onKeyDown={(event) => handleProblemRowKeyDown(event, i, p)}
                 >
                   <span className={`output-problem-icon ${p.severity}`}>{p.severity === 'error' ? '✕' : '⚠'}</span>
                   {p.file && <span className="output-problem-file">{p.file}</span>}
@@ -312,7 +449,7 @@ function OutputPanel({ height, onResize, onClose, messages = [], commandDetail, 
         </div>
       )}
       {activeTab === 'debug' && (
-        <div className="output-content output-hint-content" tabIndex={0}>
+        <div id="output-panel-debug" className="output-content output-hint-content" role="tabpanel" aria-labelledby="output-tab-debug" tabIndex={0}>
           {debugPause ? (
             <div className="cmd-detail">
               <div className="cmd-detail-call">

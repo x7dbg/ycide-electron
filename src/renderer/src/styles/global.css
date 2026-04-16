@@ -10,10 +10,11 @@
 
   --border-color: #3c3c3c;
   --border-focus: #007fd4;
+  --focus-ring-size: 2px;
 
   --text-primary: #cccccc;
-  --text-secondary: #969696;
-  --text-disabled: #5a5a5a;
+  --text-secondary: #a5a5a5;
+  --text-disabled: #8f8f8f;
   --text-accent: #4fc1ff;
   --text-link: #3794ff;
 
@@ -171,8 +172,8 @@ html, body, #root {
 
 /* 焦点样式 - Accessibility */
 :focus-visible {
-  outline: 1px solid var(--border-focus);
-  outline-offset: -1px;
+  outline: var(--focus-ring-size) solid var(--border-focus);
+  outline-offset: 1px;
 }
 
 /* WAI-ARIA 隐藏文本 */

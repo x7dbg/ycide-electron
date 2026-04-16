@@ -65,6 +65,11 @@
   color: var(--text-primary);
 }
 
+.np-field-label {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
 .np-field input {
   height: 28px;
   padding: 0 8px;

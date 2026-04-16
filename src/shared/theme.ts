@@ -174,7 +174,7 @@ const TOKEN_KEYS = THEME_TOKEN_GROUPS.flatMap(group => group.items.map(item => i
 
 const DEFAULT_THEME_TOKEN_VALUES: Record<string, string> = {
   '--text-primary': '#cccccc',
-  '--text-secondary': '#969696',
+  '--text-secondary': '#a5a5a5',
   '--bg-primary': '#1e1e1e',
   '--bg-secondary': '#252526',
   '--bg-tertiary': '#2d2d2d',
