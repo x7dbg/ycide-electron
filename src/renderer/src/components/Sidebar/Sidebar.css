@@ -165,7 +165,7 @@
 }
 .sidebar-tab.active {
   background: var(--bg-active);
-  color: var(--accent);
+  color: var(--text-primary);
   font-weight: 600;
   box-shadow: inset 0 -1px 0 var(--accent);
 }
