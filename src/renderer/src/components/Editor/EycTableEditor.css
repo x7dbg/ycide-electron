@@ -161,20 +161,20 @@ tr.eyc-diff-highlight > td {
   align-items: center;
   justify-content: center;
   font-size: 12px;
-  font-weight: bold;
+  font-weight: 400;
   color: var(--text-secondary, #858585);
   cursor: pointer;
-  border: 1px solid var(--table-border, var(--border-color, #555));
-  border-radius: 2px;
-  background: var(--table-header-bg, var(--bg-tertiary, #2d2d2d));
+  border: none;
+  border-radius: 0;
+  background: transparent;
   line-height: 1;
   user-select: none;
   flex-shrink: 0;
 }
 .eyc-gutter-fold:hover {
   color: var(--table-header-text, var(--table-text, #d4d4d4));
-  border-color: color-mix(in srgb, var(--table-border, var(--border-color, #888)) 75%, white);
-  background: var(--table-row-hover-bg, var(--bg-hover, #3c3c3c));
+  border-color: transparent;
+  background: transparent;
 }
 
 /* ===== 流程线 ===== */
@@ -890,8 +890,9 @@ tr.eyc-diff-highlight > td {
   line-height: 22px;
   padding: 0 8px 0 0;
   cursor: text;
-  font-family: "Consolas", "Microsoft YaHei", monospace;
+  font-family: "Consolas", "Cascadia Mono", "MS Gothic", "NSimSun", "Microsoft YaHei UI", monospace;
   font-size: 13px;
+  font-synthesis: none;
   white-space: pre;
   overflow: hidden;
 }
@@ -899,8 +900,21 @@ tr.eyc-diff-highlight > td {
   background: var(--table-row-hover-bg, var(--bg-hover, rgba(255, 255, 255, 0.04)));
 }
 
+/* 已选中行在 hover 时保持选中背景，不被悬停色覆盖 */
+.eyc-line-selected .eyc-code-line,
+.eyc-line-selected .eyc-code-line:hover {
+  background: var(--table-selection-bg, var(--bg-selection, rgba(51, 153, 255, 0.2)));
+}
+
 .eyc-code-spans {
   display: inline;
+}
+
+/* 代码行 token 统一以基线对齐，避免命令名与括号上下错位（不影响流程线段） */
+.eyc-code-spans > span:not(.eyc-flow-seg) {
+  display: inline;
+  vertical-align: baseline;
+  line-height: 22px;
 }
 
 /* 流程控制关键字 如果真/判断/循环 — 蓝色 */
@@ -959,20 +973,25 @@ tr.eyc-diff-highlight > td {
 /* ===== 行内编辑输入框 ===== */
 .eyc-code-line.eyc-code-line-editing {
   display: flex;
-  align-items: center;
+  /* 用 flex-start 让流程线段与输入框上边缘对齐，避免基线对齐导致进入编辑态时文字整体下移 */
+  align-items: flex-start;
+  /* 规避 Chromium 在合成层内偶发 caret 不刷新的问题 */
+  transform: none;
 }
 
 .eyc-inline-input {
   flex: 1;
   min-width: 0;
   height: 22px;
+  line-height: 22px;
   padding: 0;
   margin: 0;
   background: transparent;
   border: none;
   color: var(--table-text, var(--text-primary, #d4d4d4));
-  font-family: "Consolas", "Microsoft YaHei", monospace;
+  font-family: "Consolas", "Cascadia Mono", "MS Gothic", "NSimSun", "Microsoft YaHei UI", monospace;
   font-size: 13px;
+  font-synthesis: none;
   outline: none;
   box-sizing: border-box;
   caret-color: var(--table-text, var(--text-primary, #d4d4d4));

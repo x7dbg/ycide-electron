@@ -5,6 +5,9 @@ import '../Icon/Icon.css'
 import './Sidebar.css'
 
 type SidebarTab = 'project' | 'library' | 'property'
+type SidebarTabsPlacement = 'top' | 'bottom'
+
+const SIDEBAR_TABS_PLACEMENT_KEY = 'ycide.sidebar.tabs.placement'
 
 const TREE_ICON_MAP: Record<string, string> = {
   folder: 'folder-closed',
@@ -1179,6 +1182,15 @@ function Sidebar({ width, onResize, placement = 'left', selection, activeTab, on
   const [selectedEventIndex, setSelectedEventIndex] = useState('')
   const [existingEventSubs, setExistingEventSubs] = useState<Set<string>>(new Set())
   const [focusedProjectItemId, setFocusedProjectItemId] = useState<string | null>(null)
+  const [tabsPlacement, setTabsPlacement] = useState<SidebarTabsPlacement>(() => {
+    try {
+      const raw = localStorage.getItem(SIDEBAR_TABS_PLACEMENT_KEY)
+      return raw === 'top' ? 'top' : 'bottom'
+    } catch {
+      return 'bottom'
+    }
+  })
+  const [tabsContextMenu, setTabsContextMenu] = useState<{ x: number; y: number } | null>(null)
   const eventSubsCacheRef = useRef<Map<string, Set<string>>>(new Map())
   const sidebarTabRefs = useRef<Array<HTMLButtonElement | null>>([])
 
@@ -1222,6 +1234,74 @@ function Sidebar({ width, onResize, placement = 'left', selection, activeTab, on
       sidebarTabRefs.current[lastIndex]?.focus()
     }
   }, [onTabChange, sidebarTabs])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_TABS_PLACEMENT_KEY, tabsPlacement)
+    } catch {
+      // ignore
+    }
+  }, [tabsPlacement])
+
+  useEffect(() => {
+    if (!tabsContextMenu) return
+    const close = (): void => setTabsContextMenu(null)
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') close()
+    }
+    window.addEventListener('click', close)
+    window.addEventListener('contextmenu', close)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('contextmenu', close)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [tabsContextMenu])
+
+  const handleTabsContextMenu = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const menuWidth = 220
+    const menuX = Math.min(event.clientX, window.innerWidth - menuWidth - 8)
+    setTabsContextMenu({ x: Math.max(0, menuX), y: event.clientY })
+  }, [])
+
+  const toggleTabsPlacementFromMenu = useCallback(() => {
+    setTabsPlacement(prev => (prev === 'top' ? 'bottom' : 'top'))
+    setTabsContextMenu(null)
+  }, [])
+
+  const tabsNode = (
+    <div
+      className={`sidebar-tabs ${tabsPlacement === 'top' ? 'sidebar-tabs-top' : 'sidebar-tabs-bottom'}`}
+      role="tablist"
+      aria-label="侧栏标签"
+      onContextMenu={handleTabsContextMenu}
+    >
+      {sidebarTabs.map((tab, index) => (
+        <button
+          key={tab.id}
+          ref={(element) => { sidebarTabRefs.current[index] = element }}
+          id={`sidebar-tab-${tab.id}`}
+          className={`sidebar-tab ${activeTab === tab.id ? 'active' : ''}`}
+          role="tab"
+          aria-selected={activeTab === tab.id}
+          aria-controls={`sidebar-panel-${tab.id}`}
+          tabIndex={activeTab === tab.id ? 0 : -1}
+          onClick={() => onTabChange(tab.id)}
+          onKeyDown={(event) => handleSidebarTabKeyDown(event, tab.id)}
+          onContextMenu={handleTabsContextMenu}
+        >{tab.label}</button>
+      ))}
+    </div>
+  )
+
+  const headerNode = (
+    <div className="sidebar-header">
+      <span>{tabTitle}</span>
+    </div>
+  )
 
   // 读取当前窗口对应 .eyc，解析已存在的 .子程序 名称
   useEffect(() => {
@@ -1290,9 +1370,8 @@ function Sidebar({ width, onResize, placement = 'left', selection, activeTab, on
 
   return (
     <aside className={`sidebar ${placement === 'right' ? 'sidebar-right' : ''}`} style={{ width: `${width}px` }} role="complementary" aria-label="项目导航">
-      <div className="sidebar-header">
-        <span>{tabTitle}</span>
-      </div>
+      {headerNode}
+      {tabsPlacement === 'top' && tabsNode}
       <div className="sidebar-content">
         {activeTab === 'project' && (
           <div id="sidebar-panel-project" role="tabpanel" aria-labelledby="sidebar-tab-project">
@@ -1365,22 +1444,24 @@ function Sidebar({ width, onResize, placement = 'left', selection, activeTab, on
           </select>
         </div>
       )}
-      <div className="sidebar-tabs" role="tablist" aria-label="侧栏标签">
-        {sidebarTabs.map((tab, index) => (
+      {tabsPlacement === 'bottom' && tabsNode}
+      {tabsContextMenu && (
+        <div
+          className="sidebar-tabs-context-menu"
+          style={{ left: tabsContextMenu.x, top: tabsContextMenu.y }}
+          role="menu"
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
           <button
-            key={tab.id}
-            ref={(element) => { sidebarTabRefs.current[index] = element }}
-            id={`sidebar-tab-${tab.id}`}
-            className={`sidebar-tab ${activeTab === tab.id ? 'active' : ''}`}
-            role="tab"
-            aria-selected={activeTab === tab.id}
-            aria-controls={`sidebar-panel-${tab.id}`}
-            tabIndex={activeTab === tab.id ? 0 : -1}
-            onClick={() => onTabChange(tab.id)}
-            onKeyDown={(event) => handleSidebarTabKeyDown(event, tab.id)}
-          >{tab.label}</button>
-        ))}
-      </div>
+            type="button"
+            className="sidebar-tabs-context-menu-item"
+            onClick={toggleTabsPlacementFromMenu}
+          >
+            {tabsPlacement === 'top' ? '将“支持库/项目/属性”按钮移到底部' : '将“支持库/项目/属性”按钮移到顶部'}
+          </button>
+        </div>
+      )}
       <div
         className="sidebar-resizer"
         onMouseDown={handleMouseDown}

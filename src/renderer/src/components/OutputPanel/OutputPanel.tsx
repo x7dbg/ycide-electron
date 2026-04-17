@@ -50,6 +50,9 @@ export interface DebugPauseState {
 }
 
 type OutputTab = 'compile' | 'hint' | 'problems' | 'terminal' | 'debug'
+type OutputTabsPlacement = 'top' | 'bottom'
+
+const OUTPUT_TABS_PLACEMENT_KEY = 'ycide.output.tabs.placement'
 
 interface OutputPanelProps {
   height: number
@@ -78,6 +81,15 @@ function OutputPanel({ height, onResize, onClose, messages = [], commandDetail, 
   const [flashProblemIndex, setFlashProblemIndex] = useState<number>(-1)
   const [debugFilter, setDebugFilter] = useState('')
   const [focusedProblemIndex, setFocusedProblemIndex] = useState(0)
+  const [tabsPlacement, setTabsPlacement] = useState<OutputTabsPlacement>(() => {
+    try {
+      const raw = localStorage.getItem(OUTPUT_TABS_PLACEMENT_KEY)
+      return raw === 'bottom' ? 'bottom' : 'top'
+    } catch {
+      return 'top'
+    }
+  })
+  const [tabsContextMenu, setTabsContextMenu] = useState<{ x: number; y: number } | null>(null)
 
   // 外部强制切换标签（编译/运行时自动切到编译输出）
   useEffect(() => {
@@ -231,6 +243,43 @@ function OutputPanel({ height, onResize, onClose, messages = [], commandDetail, 
     { id: 'debug', label: `调试${isDebugPaused ? ' (暂停)' : ''}` },
   ]
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(OUTPUT_TABS_PLACEMENT_KEY, tabsPlacement)
+    } catch {
+      // ignore
+    }
+  }, [tabsPlacement])
+
+  useEffect(() => {
+    if (!tabsContextMenu) return
+    const close = (): void => setTabsContextMenu(null)
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') close()
+    }
+    window.addEventListener('click', close)
+    window.addEventListener('contextmenu', close)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('contextmenu', close)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+  }, [tabsContextMenu])
+
+  const handleTabsContextMenu = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    const menuWidth = 240
+    const menuX = Math.min(event.clientX, window.innerWidth - menuWidth - 8)
+    setTabsContextMenu({ x: Math.max(0, menuX), y: event.clientY })
+  }, [])
+
+  const toggleTabsPlacementFromMenu = useCallback(() => {
+    setTabsPlacement(prev => (prev === 'top' ? 'bottom' : 'top'))
+    setTabsContextMenu(null)
+  }, [])
+
   const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, tabId: OutputTab): void => {
     const currentIndex = tabs.findIndex(tab => tab.id === tabId)
     if (currentIndex < 0) return
@@ -268,6 +317,31 @@ function OutputPanel({ height, onResize, onClose, messages = [], commandDetail, 
     }
   }
 
+  const toolbarNode = (
+    <div className={`output-toolbar ${tabsPlacement === 'bottom' ? 'output-toolbar-bottom' : 'output-toolbar-top'}`} onContextMenu={handleTabsContextMenu}>
+      <div className="output-tabs" role="tablist" aria-label="输出面板标签">
+        {tabs.map((tab, index) => (
+          <button
+            key={tab.id}
+            ref={(element) => { tabRefs.current[index] = element }}
+            id={`output-tab-${tab.id}`}
+            className={`output-tab ${activeTab === tab.id ? 'active' : ''}`}
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            aria-controls={`output-panel-${tab.id}`}
+            tabIndex={activeTab === tab.id ? 0 : -1}
+            onClick={() => setActiveTab(tab.id)}
+            onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
+            onContextMenu={handleTabsContextMenu}
+          >{tab.label}</button>
+        ))}
+      </div>
+      <div className="output-header">
+      <button className="output-close" onClick={onClose} aria-label="关闭输出面板">×</button>
+      </div>
+    </div>
+  )
+
   return (
     <div className="output-panel" style={{ height: `${height}px` }} role="region" aria-label="输出面板">
       <div
@@ -282,25 +356,7 @@ function OutputPanel({ height, onResize, onClose, messages = [], commandDetail, 
         aria-valuenow={height}
         tabIndex={0}
       />
-      <div className="output-header">
-        <div className="output-tabs" role="tablist" aria-label="输出面板标签">
-          {tabs.map((tab, index) => (
-            <button
-              key={tab.id}
-              ref={(element) => { tabRefs.current[index] = element }}
-              id={`output-tab-${tab.id}`}
-              className={`output-tab ${activeTab === tab.id ? 'active' : ''}`}
-              role="tab"
-              aria-selected={activeTab === tab.id}
-              aria-controls={`output-panel-${tab.id}`}
-              tabIndex={activeTab === tab.id ? 0 : -1}
-              onClick={() => setActiveTab(tab.id)}
-              onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
-            >{tab.label}</button>
-          ))}
-        </div>
-        <button className="output-close" onClick={onClose} aria-label="关闭输出面板">×</button>
-      </div>
+      {tabsPlacement === 'top' && toolbarNode}
 
       {/* 编译输出内容 */}
       {activeTab === 'compile' && (
@@ -505,6 +561,25 @@ function OutputPanel({ height, onResize, onClose, messages = [], commandDetail, 
           ) : (
             <div className="cmd-detail-empty">当前未在断点处暂停。</div>
           )}
+        </div>
+      )}
+
+      {tabsPlacement === 'bottom' && toolbarNode}
+      {tabsContextMenu && (
+        <div
+          className="output-tabs-context-menu"
+          style={{ left: tabsContextMenu.x, top: tabsContextMenu.y }}
+          role="menu"
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <button
+            type="button"
+            className="output-tabs-context-menu-item"
+            onClick={toggleTabsPlacementFromMenu}
+          >
+            {tabsPlacement === 'top' ? '将“输出/终端/提示/问题/调试”按钮移到底部' : '将“输出/终端/提示/问题/调试”按钮移到顶部'}
+          </button>
         </div>
       )}
     </div>

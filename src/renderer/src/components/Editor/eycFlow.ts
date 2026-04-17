@@ -50,7 +50,7 @@ export const FLOW_END_KW = new Set([...Object.values(FLOW_START), '\u200D', '\u2
 
 export const FLOW_AUTO_COMPLETE: Record<string, (string | null)[]> = {
   '如果': ['\u200C', '\u200D', null],
-  '如果真': ['\u200C', '\u200D', null],
+  '如果真': ['\u200D', null],
   '判断': ['\u200C', '\u2060', null],
   '判断循环首': ['判断循环尾'],
   '循环判断首': ['循环判断尾'],
