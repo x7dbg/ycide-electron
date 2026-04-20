@@ -18,6 +18,7 @@ import {
   FLOW_TRUE_MARK,
   computeFlowLines,
   extractFlowKw,
+  findFlowStartLine,
   getFlowStructureAround,
   isFlowMarkerLine,
 } from './eycFlow'
@@ -178,6 +179,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
   const suppressBlurCommitUntilRef = useRef(0) // 键盘切行时临时屏蔽 blur->commit，避免编辑态被抢占清空
   const preserveEditOnScrollbarRef = useRef(false) // 拖动滚动条时保留编辑态，避免 blur 提交
   const editCellOrigValRef = useRef<string>('') // 表格单元格编辑前的原始值（liveUpdate 会实时更新 lines，需保存原始值用于重命名比较）
+  const codeLineEditOrigValRef = useRef<string>('') // 代码行编辑初始值，用于无改动时跳过重排
   const [expandedLines, setExpandedLines] = useState<Set<number>>(new Set())
   const [expandedAssignRhsParamLines, setExpandedAssignRhsParamLines] = useState<Set<number>>(new Set())
   const isResourceTableDoc = docLanguage === 'erc'
@@ -428,6 +430,14 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       return { protectedLine, deletable, sorted: Array.from(deletable).sort((a, b) => a - b) }
     }
 
+    const preserveTrailingBlankLine = (before: string[], after: string[]): string[] => {
+      const hadTrailingBlank = before.length > 0 && (before[before.length - 1] || '').trim() === ''
+      if (!hadTrailingBlank) return after
+      const hasTrailingBlank = after.length > 0 && (after[after.length - 1] || '').trim() === ''
+      if (hasTrailingBlank) return after
+      return [...after, '']
+    }
+
     const handler = (e: KeyboardEvent): void => {
       // 正在编辑输入框时不处理（交给 onKey）
       const tag = (document.activeElement as HTMLElement)?.tagName
@@ -502,6 +512,28 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       // 以下操作需要有选中行且焦点在编辑器内
       if (selectedLines.size === 0 || !inEditor) return
 
+      const protectUnselectedOuterFlowMarkers = (
+        lines: string[],
+        toDelete: Set<number>,
+        selectedSorted: number[]
+      ): Set<number> => {
+        const normalizedSelected = selectedSorted.filter(i => i >= 0 && i < lines.length)
+        if (normalizedSelected.length === 0) return toDelete
+
+        // 仅当流程命令行本身未选中时，保护其对应的结构标记行。
+        // 该规则不依赖“标记段连续性”，可覆盖深层嵌套下从底部向上多选的场景。
+        for (const li of normalizedSelected) {
+          if (!toDelete.has(li)) continue
+          if (!isFlowMarkerLine(lines[li])) continue
+          const startLine = findFlowStartLine(lines, li)
+          if (startLine >= 0 && !toDelete.has(startLine)) {
+            toDelete.delete(li)
+          }
+        }
+
+        return toDelete
+      }
+
       if (ctrl && e.key === 'c') {
         e.preventDefault()
         const sorted = [...selectedLines].sort((a, b) => a - b)
@@ -517,21 +549,12 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
         if (sorted.length === 0) return
         const selectedText = eycToYiFormat(sorted.map(i => ls[i]).join('\n'))
         navigator.clipboard.writeText(selectedText)
-        // 仅保护结构性结束标记行（最后一段的最后一行，如 \u200D / \u2060 / 循环尾）
-        const checkedCmds = new Set<number>()
-        const wouldBreak = sorted.some(i => {
-          if (i >= ls.length) return false
-          const st = getFlowStructureAround(ls, i)
-          if (!st || checkedCmds.has(st.cmdLine)) return false
-          checkedCmds.add(st.cmdLine)
-          if (deletable.has(st.cmdLine)) return false // 命令行也选中，允许整体删除
-          const lastSec = [...st.sections].reverse().find(s => s.char !== null)
-          return !!lastSec && deletable.has(lastSec.endLine)
-        })
-        if (wouldBreak) return
+        const effectiveDeletable = new Set<number>(deletable)
+        protectUnselectedOuterFlowMarkers(ls, effectiveDeletable, sorted)
+        if (effectiveDeletable.size === 0) return
         // 删除选中行
         pushUndo(currentText)
-        const nl = ls.filter((_, i) => !deletable.has(i))
+        const nl = preserveTrailingBlankLine(ls, ls.filter((_, i) => !effectiveDeletable.has(i)))
         const nt = nl.join('\n')
         setCurrentText(nt); prevRef.current = nt; onChange(nt)
         setSelectedLines(new Set())
@@ -540,22 +563,13 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault()
         const ls = currentText.split('\n')
-        // 仅保护结构性结束标记行（最后一段的最后一行）
         const { deletable, sorted: sortedSel } = getDeletableSelection(ls, selectedLines)
         if (sortedSel.length === 0) return
-        const checkedCmds2 = new Set<number>()
-        const wouldBreak2 = sortedSel.some(i => {
-          if (i >= ls.length) return false
-          const st = getFlowStructureAround(ls, i)
-          if (!st || checkedCmds2.has(st.cmdLine)) return false
-          checkedCmds2.add(st.cmdLine)
-          if (deletable.has(st.cmdLine)) return false
-          const lastSec = [...st.sections].reverse().find(s => s.char !== null)
-          return !!lastSec && deletable.has(lastSec.endLine)
-        })
-        if (wouldBreak2) return
+        const effectiveDeletable = new Set<number>(deletable)
+        protectUnselectedOuterFlowMarkers(ls, effectiveDeletable, sortedSel)
+        if (effectiveDeletable.size === 0) return
         pushUndo(currentText)
-        const nl = ls.filter((_, i) => !deletable.has(i))
+        const nl = preserveTrailingBlankLine(ls, ls.filter((_, i) => !effectiveDeletable.has(i)))
         const nt = nl.join('\n')
         setCurrentText(nt); prevRef.current = nt; onChange(nt)
         setSelectedLines(new Set())
@@ -939,6 +953,57 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     setAcIndex(index)
   }, [])
 
+  const isFlowPasteDebugEnabled = useCallback((): boolean => {
+    if (import.meta.env.DEV) return true
+    const g = globalThis as {
+      __EYC_FLOW_PASTE_DEBUG__?: boolean
+      localStorage?: { getItem: (key: string) => string | null }
+    }
+    if (g.__EYC_FLOW_PASTE_DEBUG__ === true) return true
+    try {
+      return g.localStorage?.getItem('__EYC_FLOW_PASTE_DEBUG__') === '1'
+    } catch {
+      return false
+    }
+  }, [])
+
+  const debugFlowPaste = useCallback((stage: string, payload: Record<string, unknown>) => {
+    if (!isFlowPasteDebugEnabled()) return
+    console.debug('[EYC_FLOW_DEBUG]', stage, payload)
+    const g = globalThis as {
+      api?: {
+        debug?: {
+          logRendererEvent?: (payload: { source?: string; message: string; extra?: unknown }) => Promise<{ success: boolean }>
+          logRendererError?: (payload: { source?: string; message: string; extra?: unknown }) => Promise<{ success: boolean }>
+        }
+      }
+    }
+    const evt = g.api?.debug?.logRendererEvent
+    if (evt) {
+      void evt({ source: 'flow-paste', message: stage, extra: payload }).catch(() => {
+        const err = g.api?.debug?.logRendererError
+        if (err) {
+          void err({ source: 'flow-paste-fallback', message: stage, extra: payload })
+        }
+      })
+      return
+    }
+    const err = g.api?.debug?.logRendererError
+    if (err) {
+      void err({ source: 'flow-paste-fallback', message: stage, extra: payload })
+    }
+  }, [isFlowPasteDebugEnabled])
+
+  const normalizeFlowCommandName = useCallback((raw: string): string => {
+    const trimmed = (raw || '').trim()
+    if (!trimmed) return ''
+    const token = trimmed
+      .replace(/^[\u200B\u200C\u200D\u2060]+/, '')
+      .split(/[\s(（]/)[0]
+    if (token.startsWith('.')) return token.slice(1)
+    return token
+  }, [])
+
   /** 代码行编辑结束时自动补全括号（格式化命令），返回 [主行, ...需要插入的后续行] */
   const formatCommandLine = useCallback((val: string): string[] => {
     const trimmed = val.trimStart()
@@ -975,7 +1040,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     }
 
     // 提取命令名（支持“命令名”或“命令名 (...)”两种输入）
-    const rawCmdToken = trimmed.split(/[\s(（]/)[0]
+    const rawCmdToken = normalizeFlowCommandName(trimmed)
     const resolved = resolveCmdToken(rawCmdToken)
     const cmdName = resolved.normalizedToken
     const lookupCmdName = resolved.lookupName
@@ -1763,16 +1828,31 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     }
 
     if (editCell.cellIndex < 0) {
+      if (effectiveVal === codeLineEditOrigValRef.current) {
+        flowIndentRef.current = ''
+        setEditCell(null)
+        return
+      }
       // 流程标记行：检查是否输入了流程命令（嵌套流程控制）
       if (flowMarkRef.current) {
         const markerChar = flowMarkRef.current.trimStart().charAt(0) // '\u200C' or '\u200D' or '\u2060'
         const markerIndent = flowMarkRef.current.slice(0, flowMarkRef.current.length - 1) // 缩进（去掉末尾标记字符）
-        const trimmedVal = effectiveVal.trim()
-        const cmdCheckName = trimmedVal.startsWith('.') ? trimmedVal : trimmedVal.split(/[\s(（]/)[0]
+        const markerSafeVal = effectiveVal.replace(/^[\u200B\u200C\u200D\u2060]+/, '')
+        const trimmedVal = markerSafeVal.trim()
+        const cmdCheckName = normalizeFlowCommandName(trimmedVal)
+        debugFlowPaste('commit:marker-line-input', {
+          lineIndex: editCell.lineIndex,
+          markerChar,
+          markerIndentLength: markerIndent.length,
+          effectiveVal,
+          markerSafeVal,
+          cmdCheckName,
+          isFlowCommand: !!FLOW_AUTO_COMPLETE[cmdCheckName],
+        })
         if (trimmedVal && FLOW_AUTO_COMPLETE[cmdCheckName]) {
           if (markerChar === '\u2060' && cmdCheckName === '判断') {
             const parentPrefix = markerIndent.length >= 4 ? markerIndent.slice(0, -4) : ''
-            let formattedLines = formatCommandLine(parentPrefix + effectiveVal)
+            let formattedLines = formatCommandLine(parentPrefix + markerSafeVal)
             if (formattedLines.length > 0 && formattedLines[formattedLines.length - 1].trim() === '') {
               formattedLines = formattedLines.slice(0, -1)
             }
@@ -1780,13 +1860,19 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
             // 替换当前 \u2060 标记行为格式化的命令
             nl.splice(editCell.lineIndex, 1, ...formattedLines)
             const nt = nl.join('\n')
+            debugFlowPaste('commit:marker-line-2060-judge-branch', {
+              lineIndex: editCell.lineIndex,
+              insertedLineCount: formattedLines.length,
+              firstInserted: formattedLines[0] || '',
+              trailingMarkerRetained: false,
+            })
             setCurrentText(nt); prevRef.current = nt; onChange(nt); setEditCell(null)
             flowMarkRef.current = ''
             return
           }
           // 标记行上输入流程命令 → 嵌套流程控制
           // 使用标记行的缩进作为流程命令缩进基础
-          let formattedLines = formatCommandLine(markerIndent + effectiveVal)
+          let formattedLines = formatCommandLine(markerIndent + markerSafeVal)
           // 内层不需要尾部普通空行，去掉
           if (formattedLines.length > 0 && formattedLines[formattedLines.length - 1].trim() === '') {
             formattedLines = formattedLines.slice(0, -1)
@@ -1798,14 +1884,27 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
           const insertPos = editCell.lineIndex + formattedLines.length
           nl.splice(insertPos, 0, flowMarkRef.current)
           const nt = nl.join('\n')
+          debugFlowPaste('commit:marker-line-flow-branch', {
+            lineIndex: editCell.lineIndex,
+            insertedLineCount: formattedLines.length,
+            firstInserted: formattedLines[0] || '',
+            trailingMarkerRetained: true,
+            trailingMarker: flowMarkRef.current,
+          })
           setCurrentText(nt); prevRef.current = nt; onChange(nt); setEditCell(null)
           flowMarkRef.current = ''
           return
         }
         // 非流程命令：格式化后保存（自动补全括号和参数）
-        const fmtLines = formatCommandLine(markerIndent + effectiveVal)
+        const fmtLines = formatCommandLine(markerIndent + markerSafeVal)
         const nl = [...lines]; nl[editCell.lineIndex] = flowMarkRef.current + fmtLines[0].slice(markerIndent.length)
         const nt = nl.join('\n')
+        debugFlowPaste('commit:marker-line-non-flow', {
+          lineIndex: editCell.lineIndex,
+          markerChar,
+          cmdCheckName,
+          savedLine: nl[editCell.lineIndex],
+        })
         setCurrentText(nt); prevRef.current = nt; onChange(nt); setEditCell(null)
         flowMarkRef.current = ''
         return
@@ -1813,7 +1912,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       // formatCommandLine 会为流程命令额外加4空格，若 flowIndent 已包含流程缩进则需减去以避免翻倍
       let baseIndent = flowIndentRef.current
       const trimmedCmd = effectiveVal.trim()
-      const cmdCheckName = trimmedCmd.startsWith('.') ? trimmedCmd : trimmedCmd.split(/[\s(（]/)[0]
+      const cmdCheckName = normalizeFlowCommandName(trimmedCmd)
       const isBareCmd = /^[\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_.]*\s*$/.test(trimmedCmd)
       const isParenCmd = /^[\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_.]*\s*[\(（].*[\)）]\s*$/.test(trimmedCmd)
       if ((isBareCmd || isParenCmd) && trimmedCmd && FLOW_AUTO_COMPLETE[cmdCheckName] && baseIndent.length >= 4) {
@@ -2052,7 +2151,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
 
     const nt = nl.join('\n')
     setCurrentText(nt); prevRef.current = nt; onChange(nt); setEditCell(null)
-  }, [editCell, editVal, isClassModule, isResourceTableDoc, lines, onChange, onClassNameRename])
+  }, [editCell, editVal, isClassModule, isResourceTableDoc, lines, normalizeFlowCommandName, onChange, onClassNameRename])
 
   // 每次渲染后重置 commitGuard，允许下一次合法的 commit 调用
   useEffect(() => { commitGuardRef.current = false })
@@ -2290,6 +2389,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     lastFocusedLine.current = li
     flowMarkRef.current = flowMark
     flowIndentRef.current = flowIndent
+    codeLineEditOrigValRef.current = text
     setEditCell({ lineIndex: li, cellIndex: -1, fieldIdx: -1, sliceField: false, isVirtual }); setEditVal(text)
     setTimeout(() => {
       if (!inputRef.current) return
@@ -2321,14 +2421,17 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
         const canvas = document.createElement('canvas')
         const ctx = canvas.getContext('2d')
         if (ctx) {
-          ctx.font = '13px Consolas, "Microsoft YaHei", monospace'
+          ctx.font = '13px "Consolas", "Cascadia Mono", "MS Gothic", "NSimSun", "Microsoft YaHei UI", monospace'
+          const fullWidth = ctx.measureText(text).width
           let pos = text.length
-          for (let i = 1; i <= text.length; i++) {
-            const w = ctx.measureText(text.slice(0, i)).width
-            if (w > relX) {
-              const wPrev = ctx.measureText(text.slice(0, i - 1)).width
-              pos = (relX - wPrev < w - relX) ? i - 1 : i
-              break
+          if (relX < fullWidth) {
+            for (let i = 1; i <= text.length; i++) {
+              const w = ctx.measureText(text.slice(0, i)).width
+              if (w > relX) {
+                const wPrev = ctx.measureText(text.slice(0, i - 1)).width
+                pos = (relX - wPrev < w - relX) ? i - 1 : i
+                break
+              }
             }
           }
           inputRef.current.selectionStart = pos
@@ -2396,6 +2499,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
 
   const beginCodeLineEdit = useCallback((lineIndex: number, value: string) => {
     setEditCell({ lineIndex, cellIndex: -1, fieldIdx: -1, sliceField: false })
+    codeLineEditOrigValRef.current = value
     setEditVal(value)
   }, [])
 
@@ -2800,6 +2904,11 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     setAcVisible(false)
     navigator.clipboard.readText().then(clipText => {
       const cursorLine = editCell?.lineIndex ?? lastFocusedLine.current
+      debugFlowPaste('paste-shortcut:input', {
+        cursorLine,
+        clipPreview: String(clipText || '').replace(/\r\n?/g, '\n').split('\n').slice(0, 8),
+        clipLength: (clipText || '').length,
+      })
       const pasteResult = buildMultiLinePasteResult({
         currentText,
         clipText,
@@ -2807,6 +2916,11 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
         sanitizePastedText: sanitizePastedTextForCurrent,
       })
       if (!pasteResult) return
+      debugFlowPaste('paste-shortcut:result', {
+        insertAt: pasteResult.insertAt,
+        pastedLineCount: pasteResult.pastedLineCount,
+        resultPreview: pasteResult.nextText.split('\n').slice(Math.max(0, pasteResult.insertAt - 2), pasteResult.insertAt + pasteResult.pastedLineCount + 3),
+      })
       pushUndo(currentText)
       const nt = pasteResult.nextText
       applyTextChange(nt)
@@ -2817,7 +2931,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     })
 
     return true
-  }, [applyTextChange, currentText, editCell, pushUndo, shouldUseNativeInputPaste])
+  }, [applyTextChange, currentText, debugFlowPaste, editCell, pushUndo, shouldUseNativeInputPaste])
 
   const applyTypeCellSpaceGuard = useCallback((): boolean => {
     return handleTypeCellSpaceGuard({
@@ -3641,36 +3755,52 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
               {editCell && editCell.lineIndex === blk.lineIndex && editCell.isVirtual === blk.isVirtual && editCell.paramIdx === undefined ? (
                 <>
                   {renderFlowSegs(blk.lineIndex, isExpanded).node}
-                  <input
-                    ref={inputRef}
-                    className="eyc-inline-input"
-                    size={Math.max(1, editVal.length + 1)}
-                    value={editVal}
-                    onPaste={(e) => {
-                      const clipText = e.clipboardData.getData('text/plain')
-                      if (!/[\r\n]/.test(clipText)) e.stopPropagation()
-                    }}
-                    onMouseDown={(e) => {
-                      if (e.button !== 0) return
-                      // 记录起始位置；如果鼠标拖出 input 边界则切换为跳行拖选
-                      pendingInputDragRef.current = { lineIndex: blk.lineIndex, x: e.clientX, y: e.clientY, allowRowDrag: true }
-                    }}
-                    onChange={e => {
-                      const v = e.target.value
-                      // 命令行括号保护已移除：允许自由编辑命令名与括号外内容
-                      setEditVal(v)
-                      liveUpdate(v)
-                      const pos = e.target.selectionStart ?? v.length
-                      updateCompletion(v, pos)
-                    }}
-                    onBlur={() => {
-                      if (shouldSuppressBlurCommit()) return
-                      setTimeout(() => setAcVisible(false), 150)
-                      commit()
-                    }}
-                    onKeyDown={onKey}
-                    spellCheck={false}
-                  />
+                  <div style={{ position: 'relative', display: 'inline-grid', minWidth: '1ch' }}>
+                    <span
+                      style={{
+                        gridArea: '1/1',
+                        visibility: 'hidden',
+                        whiteSpace: 'pre',
+                        fontFamily: '"Consolas", "Cascadia Mono", "MS Gothic", "NSimSun", "Microsoft YaHei UI", monospace',
+                        fontSize: '13px',
+                        lineHeight: '22px',
+                        padding: 0,
+                        margin: 0,
+                      }}
+                    >
+                      {(editVal || '') + '\u00A0'}
+                    </span>
+                    <input
+                      ref={inputRef}
+                      className="eyc-inline-input"
+                      style={{ gridArea: '1/1' }}
+                      value={editVal}
+                      onPaste={(e) => {
+                        const clipText = e.clipboardData.getData('text/plain')
+                        if (!/[\r\n]/.test(clipText)) e.stopPropagation()
+                      }}
+                      onMouseDown={(e) => {
+                        if (e.button !== 0) return
+                        // 记录起始位置；如果鼠标拖出 input 边界则切换为跳行拖选
+                        pendingInputDragRef.current = { lineIndex: blk.lineIndex, x: e.clientX, y: e.clientY, allowRowDrag: true }
+                      }}
+                      onChange={e => {
+                        const v = e.target.value
+                        // 命令行括号保护已移除：允许自由编辑命令名与括号外内容
+                        setEditVal(v)
+                        liveUpdate(v)
+                        const pos = e.target.selectionStart ?? v.length
+                        updateCompletion(v, pos)
+                      }}
+                      onBlur={() => {
+                        if (shouldSuppressBlurCommit()) return
+                        setTimeout(() => setAcVisible(false), 150)
+                        commit()
+                      }}
+                      onKeyDown={onKey}
+                      spellCheck={false}
+                    />
+                  </div>
                 </>
               ) : (
                 <span className="eyc-code-spans">

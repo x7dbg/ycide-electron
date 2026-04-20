@@ -48,15 +48,28 @@ export function buildMultiLinePasteResult(params: {
   if (pastedHasSub) {
     insertAt = findInsertAtForPastedSubs(lines, cursorLine)
   } else if (cursorLine >= 0) {
-    insertAt = Math.min(cursorLine + 1, lines.length)
+    // 与手工输入保持一致：粘贴在光标所在行生效，原行向下平移
+    insertAt = Math.min(cursorLine, lines.length)
+  }
+
+  // 若粘贴内容不含子程序头，按光标行缩进整体平移，
+  // 使嵌套流程块内粘贴时能够与上下文保持一致的缩进层级。
+  let adjustedLines = pastedLines
+  if (!pastedHasSub && cursorLine >= 0 && cursorLine < lines.length) {
+    const baseLine = lines[cursorLine] ?? ''
+    const baseIndent = baseLine.length - baseLine.trimStart().length
+    if (baseIndent > 0) {
+      const pad = ' '.repeat(baseIndent)
+      adjustedLines = pastedLines.map(l => (l.length === 0 ? l : pad + l))
+    }
   }
 
   const nextLines = [...lines]
-  nextLines.splice(insertAt, 0, ...pastedLines)
+  nextLines.splice(insertAt, 0, ...adjustedLines)
 
   return {
     nextText: nextLines.join('\n'),
     insertAt,
-    pastedLineCount: pastedLines.length,
+    pastedLineCount: adjustedLines.length,
   }
 }
