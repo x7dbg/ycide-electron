@@ -294,3 +294,79 @@ test('paste sanitize: Yi flow source still converts into internal markers', () =
   assert.equal(out.includes('\u200C'), true)
   assert.equal(out.includes('\u200D'), true)
 })
+
+test('paste sanitize: strips assembly/file directives from pasted Yi snippet', () => {
+  const { sanitizePastedTextForCurrent } = loadTsModule(formatPath)
+  const yi = [
+    '.版本 2',
+    '.支持库 spec',
+    '.如果 (a)',
+    '    333',
+    '.如果结束',
+  ].join('\n')
+
+  const out = sanitizePastedTextForCurrent(yi, '.程序集 Demo')
+  assert.equal(out.includes('.版本 '), false)
+  assert.equal(out.includes('.支持库 '), false)
+  assert.equal(out.includes('\u200C') || out.includes('\u200D') || out.includes('\u2060'), true)
+})
+
+test('paste sanitize: removes standalone true-marker ghost lines from Yi flow source', () => {
+  const { sanitizePastedTextForCurrent } = loadTsModule(formatPath)
+  const yi = [
+    '.如果 (a)',
+    '    111',
+    '',
+    '.否则',
+    '    222',
+    '.如果结束',
+  ].join('\n')
+
+  const out = sanitizePastedTextForCurrent(yi, '.程序集 Demo')
+  const hasStandaloneTrueMarker = out
+    .split('\n')
+    .some(line => line.trimStart() === '\u200C')
+  assert.equal(hasStandaloneTrueMarker, false)
+  assert.equal(out.includes('\u200D'), true)
+})
+
+test('paste sanitize: trims edge blanks and skips blank rows inside flow blocks', () => {
+  const { sanitizePastedTextForCurrent } = loadTsModule(formatPath)
+  const yi = [
+    '.版本 2',
+    '',
+    '.如果 (a)',
+    '    111',
+    '',
+    '.否则',
+    '',
+    '    222',
+    '.如果结束',
+    '',
+  ].join('\n')
+
+  const out = sanitizePastedTextForCurrent(yi, '.程序集 Demo')
+  const outLines = out.split('\n')
+  assert.equal(outLines[0] === '', false)
+  assert.equal(outLines[outLines.length - 1] === '', false)
+  assert.equal(out.includes('\n\n'), false)
+})
+
+test('paste sanitize: inserts minimal true-marker when true branch only contains nested flow', () => {
+  const { sanitizePastedTextForCurrent } = loadTsModule(formatPath)
+  const C = '\u200C'
+  const yi = [
+    '.如果 ()',
+    '    .如果 ()',
+    '        111',
+    '    .如果结束',
+    '.否则',
+    '    222',
+    '.如果结束',
+  ].join('\n')
+
+  const out = sanitizePastedTextForCurrent(yi, '.程序集 Demo')
+  const hasStandaloneTrueMarker = out.split('\n').some(line => line.trimStart() === C)
+  assert.equal(hasStandaloneTrueMarker, true)
+  assert.equal(out.includes('\u200D'), true)
+})

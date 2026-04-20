@@ -18,6 +18,7 @@ import {
   FLOW_TRUE_MARK,
   computeFlowLines,
   extractFlowKw,
+  findFlowStartLine,
   getFlowStructureAround,
   isFlowMarkerLine,
 } from './eycFlow'
@@ -178,6 +179,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
   const suppressBlurCommitUntilRef = useRef(0) // 键盘切行时临时屏蔽 blur->commit，避免编辑态被抢占清空
   const preserveEditOnScrollbarRef = useRef(false) // 拖动滚动条时保留编辑态，避免 blur 提交
   const editCellOrigValRef = useRef<string>('') // 表格单元格编辑前的原始值（liveUpdate 会实时更新 lines，需保存原始值用于重命名比较）
+  const codeLineEditOrigValRef = useRef<string>('') // 代码行编辑初始值，用于无改动时跳过重排
   const [expandedLines, setExpandedLines] = useState<Set<number>>(new Set())
   const [expandedAssignRhsParamLines, setExpandedAssignRhsParamLines] = useState<Set<number>>(new Set())
   const isResourceTableDoc = docLanguage === 'erc'
@@ -428,6 +430,14 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       return { protectedLine, deletable, sorted: Array.from(deletable).sort((a, b) => a - b) }
     }
 
+    const preserveTrailingBlankLine = (before: string[], after: string[]): string[] => {
+      const hadTrailingBlank = before.length > 0 && (before[before.length - 1] || '').trim() === ''
+      if (!hadTrailingBlank) return after
+      const hasTrailingBlank = after.length > 0 && (after[after.length - 1] || '').trim() === ''
+      if (hasTrailingBlank) return after
+      return [...after, '']
+    }
+
     const handler = (e: KeyboardEvent): void => {
       // 正在编辑输入框时不处理（交给 onKey）
       const tag = (document.activeElement as HTMLElement)?.tagName
@@ -502,6 +512,28 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       // 以下操作需要有选中行且焦点在编辑器内
       if (selectedLines.size === 0 || !inEditor) return
 
+      const protectUnselectedOuterFlowMarkers = (
+        lines: string[],
+        toDelete: Set<number>,
+        selectedSorted: number[]
+      ): Set<number> => {
+        const normalizedSelected = selectedSorted.filter(i => i >= 0 && i < lines.length)
+        if (normalizedSelected.length === 0) return toDelete
+
+        // 仅当流程命令行本身未选中时，保护其对应的结构标记行。
+        // 该规则不依赖“标记段连续性”，可覆盖深层嵌套下从底部向上多选的场景。
+        for (const li of normalizedSelected) {
+          if (!toDelete.has(li)) continue
+          if (!isFlowMarkerLine(lines[li])) continue
+          const startLine = findFlowStartLine(lines, li)
+          if (startLine >= 0 && !toDelete.has(startLine)) {
+            toDelete.delete(li)
+          }
+        }
+
+        return toDelete
+      }
+
       if (ctrl && e.key === 'c') {
         e.preventDefault()
         const sorted = [...selectedLines].sort((a, b) => a - b)
@@ -517,21 +549,12 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
         if (sorted.length === 0) return
         const selectedText = eycToYiFormat(sorted.map(i => ls[i]).join('\n'))
         navigator.clipboard.writeText(selectedText)
-        // 仅保护结构性结束标记行（最后一段的最后一行，如 \u200D / \u2060 / 循环尾）
-        const checkedCmds = new Set<number>()
-        const wouldBreak = sorted.some(i => {
-          if (i >= ls.length) return false
-          const st = getFlowStructureAround(ls, i)
-          if (!st || checkedCmds.has(st.cmdLine)) return false
-          checkedCmds.add(st.cmdLine)
-          if (deletable.has(st.cmdLine)) return false // 命令行也选中，允许整体删除
-          const lastSec = [...st.sections].reverse().find(s => s.char !== null)
-          return !!lastSec && deletable.has(lastSec.endLine)
-        })
-        if (wouldBreak) return
+        const effectiveDeletable = new Set<number>(deletable)
+        protectUnselectedOuterFlowMarkers(ls, effectiveDeletable, sorted)
+        if (effectiveDeletable.size === 0) return
         // 删除选中行
         pushUndo(currentText)
-        const nl = ls.filter((_, i) => !deletable.has(i))
+        const nl = preserveTrailingBlankLine(ls, ls.filter((_, i) => !effectiveDeletable.has(i)))
         const nt = nl.join('\n')
         setCurrentText(nt); prevRef.current = nt; onChange(nt)
         setSelectedLines(new Set())
@@ -540,22 +563,13 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
       if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault()
         const ls = currentText.split('\n')
-        // 仅保护结构性结束标记行（最后一段的最后一行）
         const { deletable, sorted: sortedSel } = getDeletableSelection(ls, selectedLines)
         if (sortedSel.length === 0) return
-        const checkedCmds2 = new Set<number>()
-        const wouldBreak2 = sortedSel.some(i => {
-          if (i >= ls.length) return false
-          const st = getFlowStructureAround(ls, i)
-          if (!st || checkedCmds2.has(st.cmdLine)) return false
-          checkedCmds2.add(st.cmdLine)
-          if (deletable.has(st.cmdLine)) return false
-          const lastSec = [...st.sections].reverse().find(s => s.char !== null)
-          return !!lastSec && deletable.has(lastSec.endLine)
-        })
-        if (wouldBreak2) return
+        const effectiveDeletable = new Set<number>(deletable)
+        protectUnselectedOuterFlowMarkers(ls, effectiveDeletable, sortedSel)
+        if (effectiveDeletable.size === 0) return
         pushUndo(currentText)
-        const nl = ls.filter((_, i) => !deletable.has(i))
+        const nl = preserveTrailingBlankLine(ls, ls.filter((_, i) => !effectiveDeletable.has(i)))
         const nt = nl.join('\n')
         setCurrentText(nt); prevRef.current = nt; onChange(nt)
         setSelectedLines(new Set())
@@ -1814,6 +1828,11 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     }
 
     if (editCell.cellIndex < 0) {
+      if (effectiveVal === codeLineEditOrigValRef.current) {
+        flowIndentRef.current = ''
+        setEditCell(null)
+        return
+      }
       // 流程标记行：检查是否输入了流程命令（嵌套流程控制）
       if (flowMarkRef.current) {
         const markerChar = flowMarkRef.current.trimStart().charAt(0) // '\u200C' or '\u200D' or '\u2060'
@@ -2370,6 +2389,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
     lastFocusedLine.current = li
     flowMarkRef.current = flowMark
     flowIndentRef.current = flowIndent
+    codeLineEditOrigValRef.current = text
     setEditCell({ lineIndex: li, cellIndex: -1, fieldIdx: -1, sliceField: false, isVirtual }); setEditVal(text)
     setTimeout(() => {
       if (!inputRef.current) return
@@ -2479,6 +2499,7 @@ const EycTableEditor = forwardRef<EycTableEditorHandle, EycTableEditorProps>(fun
 
   const beginCodeLineEdit = useCallback((lineIndex: number, value: string) => {
     setEditCell({ lineIndex, cellIndex: -1, fieldIdx: -1, sliceField: false })
+    codeLineEditOrigValRef.current = value
     setEditVal(value)
   }, [])
 

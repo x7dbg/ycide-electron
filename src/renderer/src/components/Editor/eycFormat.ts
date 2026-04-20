@@ -121,10 +121,19 @@ function convertYiFlowToInternal(src: string): string {
     outBodyIndent: number  // body 行在输出中的基础缩进
     srcBodyIndent: number  // body 行在源码中的起始缩进（= 源命令缩进 + 4）
     baseIndent: number     // 此结构命令在输出中的缩进
+    trueMarkerEmitted?: boolean // 仅 branch 使用：当前真分支阶段是否已输出过 \u200C 标记
     // loop 专用
     endKw?: string
   }
   const stack: Frame[] = []
+
+  function ensureTrueMarker(frame: Frame | null): void {
+    if (!frame || frame.kind !== 'branch') return
+    if (frame.marker !== FLOW_TRUE_MARK) return
+    if (frame.trueMarkerEmitted) return
+    result.push(' '.repeat(frame.baseIndent) + FLOW_TRUE_MARK)
+    frame.trueMarkerEmitted = true
+  }
 
   function getIndent(line: string): number {
     return line.length - line.trimStart().length
@@ -167,17 +176,9 @@ function convertYiFlowToInternal(src: string): string {
 
     // 空行
     if (!trimmed) {
-      const { outIndent, marker } = mapLine(indent)
-      if (marker) {
-        // 找到最近的 branch baseIndent
-        let branchBase = 0
-        for (let i = stack.length - 1; i >= 0; i--) {
-          if (stack[i].kind === 'branch') { branchBase = stack[i].baseIndent; break }
-        }
-        result.push(' '.repeat(branchBase) + marker)
-      } else {
-        result.push(raw)
-      }
+      // 流程结构内部的空白行会制造额外“空白流程行”，在粘贴转换阶段直接跳过。
+      if (stack.length > 0) continue
+      result.push(raw)
       continue
     }
 
@@ -185,6 +186,10 @@ function convertYiFlowToInternal(src: string): string {
     if (!trimmed.startsWith('.')) {
       const { outIndent, marker } = mapLine(indent)
       result.push(' '.repeat(outIndent) + marker + trimmed)
+      if (marker === FLOW_TRUE_MARK && stack.length > 0) {
+        const top = stack[stack.length - 1]
+        if (top.kind === 'branch') top.trueMarkerEmitted = true
+      }
       continue
     }
 
@@ -195,6 +200,10 @@ function convertYiFlowToInternal(src: string): string {
     if (!flowDotKeywords.has(kw)) {
       const { outIndent, marker } = mapLine(indent)
       result.push(' '.repeat(outIndent) + marker + trimmed)
+      if (marker === FLOW_TRUE_MARK && stack.length > 0) {
+        const top = stack[stack.length - 1]
+        if (top.kind === 'branch') top.trueMarkerEmitted = true
+      }
       continue
     }
 
@@ -205,7 +214,10 @@ function convertYiFlowToInternal(src: string): string {
       const outIndent = mapFlowCommandIndent(indent)
       result.push(' '.repeat(outIndent) + trimmed.slice(1))
       const branchType = kw as '如果' | '如果真' | '判断'
-      const marker = kw === '判断' ? FLOW_TRUE_MARK : FLOW_TRUE_MARK
+      // 与手工输入行为一致：
+      // - 如果/判断 的正文使用 \u200C 分支标记
+      // - 如果真 的正文不使用 \u200C，仅依赖结束标记 \u200D
+      const marker = branchType === '如果真' ? '' : FLOW_TRUE_MARK
       stack.push({
         kind: 'branch',
         type: branchType,
@@ -213,6 +225,7 @@ function convertYiFlowToInternal(src: string): string {
         baseIndent: outIndent,
         outBodyIndent: outIndent,
         srcBodyIndent: indent + 4,
+        trueMarkerEmitted: false,
       })
       continue
     }
@@ -223,7 +236,9 @@ function convertYiFlowToInternal(src: string): string {
       while (stack.length > 0) {
         const top = stack[stack.length - 1]
         if (top.kind === 'branch' && top.type === '如果') {
+          ensureTrueMarker(top)
           top.marker = FLOW_ELSE_MARK
+          top.trueMarkerEmitted = false
           top.srcBodyIndent = indent + 4
           break
         }
@@ -237,7 +252,9 @@ function convertYiFlowToInternal(src: string): string {
       while (stack.length > 0) {
         const top = stack[stack.length - 1]
         if (top.kind === 'branch' && top.type === '判断') {
+          ensureTrueMarker(top)
           top.marker = FLOW_JUDGE_END_MARK
+          top.trueMarkerEmitted = false
           top.srcBodyIndent = indent + 4
           break
         }
@@ -258,6 +275,7 @@ function convertYiFlowToInternal(src: string): string {
         }
         stack.pop()
       }
+      ensureTrueMarker(frame)
       // 内层结束行只承载内层结束标记，不与外层分支标记合并
       // 外层标记由后续 body 行通过 mapLine 自然带出
       if (frame) {
@@ -279,6 +297,7 @@ function convertYiFlowToInternal(src: string): string {
         }
         stack.pop()
       }
+      ensureTrueMarker(frame)
       if (frame) {
         result.push(' '.repeat(frame.baseIndent) + FLOW_ELSE_MARK)
       } else {
@@ -298,6 +317,7 @@ function convertYiFlowToInternal(src: string): string {
         }
         stack.pop()
       }
+      ensureTrueMarker(frame)
       if (frame) {
         result.push(' '.repeat(frame.baseIndent) + FLOW_JUDGE_END_MARK)
       } else {
@@ -369,16 +389,18 @@ function eycToYiFormat(text: string): string {
       ? srcLines[i - 1].replace(new RegExp(FLOW_AUTO_TAG, 'g'), '').trimStart()
       : ''
 
+    // 分支体在易语言格式中需要比关键字多缩进一级（4 个空格）
+    const bodyIndent = indent + '    '
     if (trimmed.startsWith(FLOW_TRUE_MARK)) {
       const rest = trimmed.slice(1)
-      out.push(rest.trim() ? indent + rest : '')
+      out.push(rest.trim() ? bodyIndent + rest : '')
       continue
     }
     if (trimmed.startsWith(FLOW_ELSE_MARK)) {
       const rest = trimmed.slice(1)
       if (rest.trim()) {
         if (!prevTrimmed.startsWith(FLOW_ELSE_MARK)) out.push(indent + '.否则')
-        out.push(indent + rest)
+        out.push(bodyIndent + rest)
         if (!nextTrimmed.startsWith(FLOW_ELSE_MARK)) out.push(indent + '.如果结束')
       } else {
         const currentBranch = branchStack[branchStack.length - 1]
@@ -391,7 +413,7 @@ function eycToYiFormat(text: string): string {
       const rest = trimmed.slice(1)
       if (rest.trim()) {
         if (!prevTrimmed.startsWith(FLOW_JUDGE_END_MARK)) out.push(indent + '.默认')
-        out.push(indent + rest)
+        out.push(bodyIndent + rest)
         if (!nextTrimmed.startsWith(FLOW_JUDGE_END_MARK)) out.push(indent + '.判断结束')
       } else {
         out.push(indent + '.判断结束')
@@ -441,15 +463,25 @@ function sanitizePastedTextForCurrent(text: string, currentSource: string): stri
     return normalized
   }
 
+  const shouldDropAssemblyLevelDirective = (line: string): boolean => {
+    const trimmed = line.trimStart()
+    if (!trimmed.startsWith('.')) return false
+    // 这些是文件/程序集级声明，粘贴到代码区时应剔除，避免污染流程结构。
+    return trimmed.startsWith('.程序集 ')
+      || trimmed.startsWith('.版本 ')
+      || trimmed.startsWith('.支持库 ')
+  }
+
   const filtered = normalizeEycText(normalized)
     .split('\n')
-    .filter(line => !line.trimStart().startsWith('.程序集 '))
+    .filter(line => !shouldDropAssemblyLevelDirective(line))
     .join('\n')
+  const trimmedEdgeBlank = filtered.replace(/^\n+/, '').replace(/\n+$/, '')
   debugFlowPaste('sanitize:output-filtered', {
-    outputPreview: filtered.split('\n').slice(0, 8),
-    outputMarkerCount: countFlowMarkers(filtered),
+    outputPreview: trimmedEdgeBlank.split('\n').slice(0, 8),
+    outputMarkerCount: countFlowMarkers(trimmedEdgeBlank),
   })
-  return filtered
+  return trimmedEdgeBlank
 }
 
 export {

@@ -256,6 +256,12 @@ export function useEditorInteractionHandlers(params: UseEditorInteractionHandler
     for (let i = 0; i < pasteResult.pastedLineCount; i++) newSel.add(pasteResult.insertAt + i)
     setSelectedLines(newSel)
     lastFocusedLineRef.current = pasteResult.insertAt + pasteResult.pastedLineCount - 1
+    if (isCodeLineInput) {
+      // 多行粘贴后原输入框中的 editVal 已不再对应文档内容，立即退出编辑态避免 blur 回写旧值。
+      suppressInlineBlurCommit(2000)
+      setAcVisible(false)
+      setEditCell(null)
+    }
   }, [
     applyTextChange,
     currentText,
@@ -264,7 +270,10 @@ export function useEditorInteractionHandlers(params: UseEditorInteractionHandler
     pushUndo,
     sanitizePastedTextForCurrent,
     setSelectedLines,
+    setAcVisible,
+    setEditCell,
     shouldUseNativeInputPaste,
+    suppressInlineBlurCommit,
   ])
 
   const handleTableBlockMouseDown = useCallback((
