@@ -260,6 +260,25 @@ function normalizeResourceTableContent(raw: string): string {
   return `${nonEmptyLines.join('\n')}\n`
 }
 
+function extractAssemblyLabel(content: string): string | null {
+  const lines = (content || '').replace(/\r\n/g, '\n').split('\n')
+  for (const line of lines) {
+    const m = /^\s*\.程序集\s+([^,\s，]+)/.exec(line)
+    if (!m) continue
+    const name = (m[1] || '').trim()
+    if (name) return name
+  }
+  return null
+}
+
+function stripFileExtension(fileName: string): string {
+  const name = (fileName || '').trim()
+  if (!name) return name
+  const idx = name.lastIndexOf('.')
+  if (idx <= 0) return name
+  return name.slice(0, idx)
+}
+
 const DLL_DECL_PREFIX = '.DLL\u547D\u4EE4 '
 const PARAM_DECL_PREFIX = '.\u53C2\u6570 '
 const FLAG_OPTIONAL = '\u53EF\u7A7A'
@@ -2139,40 +2158,40 @@ function App(): React.JSX.Element {
 
     for (const f of files) {
       if (f.type === 'EFW') {
-        windowFiles.push({ id: f.fileName, label: f.fileName, type: 'window' })
+        windowFiles.push({ id: f.fileName, label: stripFileExtension(f.fileName), type: 'window' })
       } else if (f.type === 'EYC') {
         const filePath = joinPath(projectDir, f.fileName)
         const content = await window.api?.project?.readFile(filePath)
         const subNodes = extractSubroutineNodes(content || '', f.fileName)
-        sourceFiles.push({ id: f.fileName, label: f.fileName, type: 'module', children: subNodes, expanded: false })
+        sourceFiles.push({ id: f.fileName, label: extractAssemblyLabel(content || '') || stripFileExtension(f.fileName), type: 'module', children: subNodes, expanded: false })
       } else if (f.type === 'EGV') {
         const filePath = joinPath(projectDir, f.fileName)
         const content = await window.api?.project?.readFile(filePath)
         const varNodes = extractGlobalVarNodes(content || '', f.fileName)
-        globalVarFiles.push({ id: f.fileName, label: f.fileName, type: 'module', children: varNodes, expanded: false })
+        globalVarFiles.push({ id: f.fileName, label: stripFileExtension(f.fileName), type: 'module', children: varNodes, expanded: false })
       } else if (f.type === 'ECS') {
         const filePath = joinPath(projectDir, f.fileName)
         const content = await window.api?.project?.readFile(filePath)
         const constNodes = extractConstantNodes(content || '', f.fileName)
-        constantFiles.push({ id: f.fileName, label: f.fileName, type: 'module', children: constNodes, expanded: false })
+        constantFiles.push({ id: f.fileName, label: stripFileExtension(f.fileName), type: 'module', children: constNodes, expanded: false })
       } else if (f.type === 'EDT') {
         const filePath = joinPath(projectDir, f.fileName)
         const content = await window.api?.project?.readFile(filePath)
         const dtNodes = extractDataTypeNodes(content || '', f.fileName)
-        dataTypeFiles.push({ id: f.fileName, label: f.fileName, type: 'module', children: dtNodes, expanded: false })
+        dataTypeFiles.push({ id: f.fileName, label: stripFileExtension(f.fileName), type: 'module', children: dtNodes, expanded: false })
       } else if (f.type === 'ELL') {
         const filePath = joinPath(projectDir, f.fileName)
         const content = await window.api?.project?.readFile(filePath)
         const dllNodes = extractDllCommandNodes(content || '', f.fileName)
-        dllCmdFiles.push({ id: f.fileName, label: f.fileName, type: 'module', children: dllNodes, expanded: false })
+        dllCmdFiles.push({ id: f.fileName, label: stripFileExtension(f.fileName), type: 'module', children: dllNodes, expanded: false })
       } else if (f.type === 'ERC') {
         const filePath = joinPath(projectDir, f.fileName)
         const content = await window.api?.project?.readFile(filePath)
         const resNodes = extractResourceNodes(content || '', f.fileName)
-        resourceFiles.push({ id: f.fileName, label: f.fileName, type: 'module', children: resNodes, expanded: false })
+        resourceFiles.push({ id: f.fileName, label: stripFileExtension(f.fileName), type: 'module', children: resNodes, expanded: false })
       } else {
         if (f.type === 'RES') continue
-        resourceFiles.push({ id: f.fileName, label: f.fileName, type: 'resource' })
+        resourceFiles.push({ id: f.fileName, label: stripFileExtension(f.fileName), type: 'resource' })
       }
     }
 
@@ -2253,6 +2272,7 @@ function App(): React.JSX.Element {
 
   const buildTabFromPath = useCallback(async (fp: string): Promise<EditorTab | null> => {
     const fileName = getBaseName(fp)
+    const displayName = stripFileExtension(fileName)
     const ext = fileName.split('.').pop()?.toLowerCase()
     const content = await window.api?.project?.readFile(fp)
     if (content === null || content === undefined) return null
@@ -2274,14 +2294,17 @@ function App(): React.JSX.Element {
           visible: c.visible ?? true, enabled: c.enabled ?? true, properties: c.properties || {},
         })),
       }
-      return { id: fp, label: fileName, language: 'efw', value: '', savedValue: JSON.stringify(formData, null, 2), filePath: fp, formData }
+      return { id: fp, label: formData.name || displayName, language: 'efw', value: '', savedValue: JSON.stringify(formData, null, 2), filePath: fp, formData }
     }
 
     if (ext === 'eyc' || ext === 'ecc' || ext === 'egv' || ext === 'ecs' || ext === 'edt' || ext === 'ell' || ext === 'erc') {
       const normalized = ext === 'erc'
         ? normalizeResourceTableContent(content)
         : content
-      return { id: fp, label: fileName, language: ext === 'ecc' ? 'eyc' : ext, value: normalized, savedValue: normalized, filePath: fp }
+      const tabLabel = (ext === 'eyc' || ext === 'ecc')
+        ? (extractAssemblyLabel(normalized) || displayName)
+        : displayName
+      return { id: fp, label: tabLabel, language: ext === 'ecc' ? 'eyc' : ext, value: normalized, savedValue: normalized, filePath: fp }
     }
 
     return null
@@ -2358,9 +2381,10 @@ function App(): React.JSX.Element {
     if (!tab) return false
     editorRef.current?.openFile(tab)
     if (targetLine && targetLine > 0) {
-      setTimeout(() => {
-        editorRef.current?.navigateToLine(targetLine)
-      }, 80)
+      // 跨文档切换时，目标编辑器与行布局可能尚未稳定；分多拍重试可避免需要二次双击。
+      window.setTimeout(() => editorRef.current?.navigateToLine(targetLine), 80)
+      window.setTimeout(() => editorRef.current?.navigateToLine(targetLine), 220)
+      window.setTimeout(() => editorRef.current?.navigateToLine(targetLine), 520)
     }
     const label = getBaseName(filePath) || filePath
     pushRecentOpened({ type: 'file', path: filePath, label })
@@ -2535,7 +2559,7 @@ function App(): React.JSX.Element {
         if (!dir) break
         // 生成不重复的文件名
         const existingFiles = projectTree[0]?.children
-          ?.find(c => c.id === '_cat_sources')?.children?.map(c => c.label) || []
+          ?.find(c => c.id === '_cat_sources')?.children?.map(c => c.id) || []
         let n = 1
         while (existingFiles.includes('程序集' + n + '.eyc')) n++
         const newFileName = '程序集' + n + '.eyc'
@@ -2547,13 +2571,13 @@ function App(): React.JSX.Element {
           ...root,
           children: root.children?.map(cat =>
             cat.id === '_cat_sources'
-              ? { ...cat, children: [...(cat.children || []), { id: newFileName, label: newFileName, type: 'module' as const, children: extractSubroutineNodes(content, newFileName), expanded: false }] }
+              ? { ...cat, children: [...(cat.children || []), { id: newFileName, label: assemblyName, type: 'module' as const, children: extractSubroutineNodes(content, newFileName), expanded: false }] }
               : cat
           )
         })))
         // 打开新文件
         const filePath = joinPath(dir, newFileName)
-        editorRef.current?.openFile({ id: filePath, label: newFileName, language: 'eyc', value: content, savedValue: content, filePath })
+        editorRef.current?.openFile({ id: filePath, label: assemblyName, language: 'eyc', value: content, savedValue: content, filePath })
         break
       }
       case 'insert:classModule': {
@@ -2561,7 +2585,7 @@ function App(): React.JSX.Element {
         if (!dir) break
         // 生成不重复的文件名（放在程序集分类下）
         const existingFiles = projectTree[0]?.children
-          ?.find(c => c.id === '_cat_sources')?.children?.map(c => c.label) || []
+          ?.find(c => c.id === '_cat_sources')?.children?.map(c => c.id) || []
         let n = 1
         while (existingFiles.includes('类模块' + n + '.ecc')) n++
         const newFileName = '类模块' + n + '.ecc'
@@ -2577,13 +2601,13 @@ function App(): React.JSX.Element {
           ...root,
           children: root.children?.map(cat =>
             cat.id === '_cat_sources'
-              ? { ...cat, children: [...(cat.children || []), { id: newFileName, label: newFileName, type: 'module' as const, children: extractSubroutineNodes(content, newFileName), expanded: false }] }
+              ? { ...cat, children: [...(cat.children || []), { id: newFileName, label: className, type: 'module' as const, children: extractSubroutineNodes(content, newFileName), expanded: false }] }
               : cat
           )
         })))
         // 打开新文件（使用 EYC 编辑体验）
         const filePath = joinPath(dir, newFileName)
-        editorRef.current?.openFile({ id: filePath, label: newFileName, language: 'eyc', value: content, savedValue: content, filePath })
+        editorRef.current?.openFile({ id: filePath, label: className, language: 'eyc', value: content, savedValue: content, filePath })
         break
       }
       case 'insert:globalVar':
@@ -2591,7 +2615,7 @@ function App(): React.JSX.Element {
         const dir = currentProjectDirRef.current
         if (!dir) break
         const existingFiles = projectTree[0]?.children
-          ?.find(c => c.id === '_cat_globals')?.children?.map(c => c.label) || []
+          ?.find(c => c.id === '_cat_globals')?.children?.map(c => c.id) || []
         const globalFileName = '全局变量.egv'
         const filePath = joinPath(dir, globalFileName)
 
@@ -2613,7 +2637,7 @@ function App(): React.JSX.Element {
             ...root,
             children: root.children?.map(cat =>
               cat.id === '_cat_globals'
-                ? { ...cat, children: [...(cat.children || []), { id: globalFileName, label: globalFileName, type: 'module' as const, children: extractGlobalVarNodes(content, globalFileName), expanded: false }] }
+                ? { ...cat, children: [...(cat.children || []), { id: globalFileName, label: stripFileExtension(globalFileName), type: 'module' as const, children: extractGlobalVarNodes(content, globalFileName), expanded: false }] }
                 : cat
             )
           })))
@@ -2621,7 +2645,7 @@ function App(): React.JSX.Element {
           await window.api?.file?.save(filePath, content)
         }
 
-        editorRef.current?.upsertFile({ id: filePath, label: globalFileName, language: 'egv', value: content, savedValue: content, filePath })
+        editorRef.current?.upsertFile({ id: filePath, label: stripFileExtension(globalFileName), language: 'egv', value: content, savedValue: content, filePath })
         break
       }
       case 'insert:constant':
@@ -2629,7 +2653,7 @@ function App(): React.JSX.Element {
         const dir = currentProjectDirRef.current
         if (!dir) break
         const existingFiles = projectTree[0]?.children
-          ?.find(c => c.id === '_cat_constants')?.children?.map(c => c.label) || []
+          ?.find(c => c.id === '_cat_constants')?.children?.map(c => c.id) || []
         const constantFileName = '常量.ecs'
         const filePath = joinPath(dir, constantFileName)
 
@@ -2651,7 +2675,7 @@ function App(): React.JSX.Element {
             ...root,
             children: root.children?.map(cat =>
               cat.id === '_cat_constants'
-                ? { ...cat, children: [...(cat.children || []), { id: constantFileName, label: constantFileName, type: 'module' as const, children: extractConstantNodes(content, constantFileName), expanded: false }] }
+                ? { ...cat, children: [...(cat.children || []), { id: constantFileName, label: stripFileExtension(constantFileName), type: 'module' as const, children: extractConstantNodes(content, constantFileName), expanded: false }] }
                 : cat
             )
           })))
@@ -2659,7 +2683,7 @@ function App(): React.JSX.Element {
           await window.api?.file?.save(filePath, content)
         }
 
-        editorRef.current?.upsertFile({ id: filePath, label: constantFileName, language: 'ecs', value: content, savedValue: content, filePath })
+        editorRef.current?.upsertFile({ id: filePath, label: stripFileExtension(constantFileName), language: 'ecs', value: content, savedValue: content, filePath })
         break
       }
       case 'insert:dataType':
@@ -2667,7 +2691,7 @@ function App(): React.JSX.Element {
         const dir = currentProjectDirRef.current
         if (!dir) break
         const existingFiles = projectTree[0]?.children
-          ?.find(c => c.id === '_cat_datatypes')?.children?.map(c => c.label) || []
+          ?.find(c => c.id === '_cat_datatypes')?.children?.map(c => c.id) || []
         const dataTypeFileName = '自定义数据类型.edt'
         const filePath = joinPath(dir, dataTypeFileName)
 
@@ -2689,7 +2713,7 @@ function App(): React.JSX.Element {
             ...root,
             children: root.children?.map(cat =>
               cat.id === '_cat_datatypes'
-                ? { ...cat, children: [...(cat.children || []), { id: dataTypeFileName, label: dataTypeFileName, type: 'module' as const, children: extractDataTypeNodes(content, dataTypeFileName), expanded: false }] }
+                ? { ...cat, children: [...(cat.children || []), { id: dataTypeFileName, label: stripFileExtension(dataTypeFileName), type: 'module' as const, children: extractDataTypeNodes(content, dataTypeFileName), expanded: false }] }
                 : cat
             )
           })))
@@ -2697,7 +2721,7 @@ function App(): React.JSX.Element {
           await window.api?.file?.save(filePath, content)
         }
 
-        editorRef.current?.upsertFile({ id: filePath, label: dataTypeFileName, language: 'edt', value: content, savedValue: content, filePath })
+        editorRef.current?.upsertFile({ id: filePath, label: stripFileExtension(dataTypeFileName), language: 'edt', value: content, savedValue: content, filePath })
         break
       }
       case 'insert:dllCmd':
@@ -2705,7 +2729,7 @@ function App(): React.JSX.Element {
         const dir = currentProjectDirRef.current
         if (!dir) break
         const existingFiles = projectTree[0]?.children
-          ?.find(c => c.id === '_cat_dllcmds')?.children?.map(c => c.label) || []
+          ?.find(c => c.id === '_cat_dllcmds')?.children?.map(c => c.id) || []
         const dllFileName = 'DLL命令.ell'
         const filePath = joinPath(dir, dllFileName)
 
@@ -2727,7 +2751,7 @@ function App(): React.JSX.Element {
             ...root,
             children: root.children?.map(cat =>
               cat.id === '_cat_dllcmds'
-                ? { ...cat, children: [...(cat.children || []), { id: dllFileName, label: dllFileName, type: 'module' as const, children: extractDllCommandNodes(content, dllFileName), expanded: false }] }
+                ? { ...cat, children: [...(cat.children || []), { id: dllFileName, label: stripFileExtension(dllFileName), type: 'module' as const, children: extractDllCommandNodes(content, dllFileName), expanded: false }] }
                 : cat
             )
           })))
@@ -2735,7 +2759,7 @@ function App(): React.JSX.Element {
           await window.api?.file?.save(filePath, content)
         }
 
-        editorRef.current?.upsertFile({ id: filePath, label: dllFileName, language: 'ell', value: content, savedValue: content, filePath })
+        editorRef.current?.upsertFile({ id: filePath, label: stripFileExtension(dllFileName), language: 'ell', value: content, savedValue: content, filePath })
         break
       }
       case 'insert:window':
@@ -2744,7 +2768,7 @@ function App(): React.JSX.Element {
         if (!dir) break
 
         const existingWindowFiles = projectTree[0]?.children
-          ?.find(c => c.id === '_cat_windows')?.children?.map(c => c.label) || []
+          ?.find(c => c.id === '_cat_windows')?.children?.map(c => c.id) || []
 
         let n = 1
         while (existingWindowFiles.includes('窗口' + n + '.efw')) n++
@@ -2774,7 +2798,7 @@ function App(): React.JSX.Element {
             if (cat.id === '_cat_windows') {
               return {
                 ...cat,
-                children: [...(cat.children || []), { id: efwFileName, label: efwFileName, type: 'window' as const }],
+                children: [...(cat.children || []), { id: efwFileName, label: windowName, type: 'window' as const }],
               }
             }
             if (cat.id === '_cat_sources') {
@@ -2782,7 +2806,7 @@ function App(): React.JSX.Element {
                 ...cat,
                 children: [...(cat.children || []), {
                   id: eycFileName,
-                  label: eycFileName,
+                  label: extractAssemblyLabel(eycContent) || stripFileExtension(eycFileName),
                   type: 'module' as const,
                   children: extractSubroutineNodes(eycContent, eycFileName),
                   expanded: false,
@@ -2853,7 +2877,7 @@ function App(): React.JSX.Element {
         setOutputMessages(prev => [...prev, { type: 'info', text: `已在 ${resourceFileName} 插入空资源: 资源${nextIndex}` }])
         editorRef.current?.upsertFile({
           id: resourceTablePath,
-          label: resourceFileName,
+          label: stripFileExtension(resourceFileName),
           language: 'erc',
           value: nextContent,
           savedValue: nextContent,
@@ -2949,7 +2973,7 @@ function App(): React.JSX.Element {
           }
           setOpenProjectFiles([{
             id: efwPath,
-            label: '_启动窗口.efw',
+            label: formData.name || '_启动窗口',
             language: 'efw',
             value: '',
             savedValue: JSON.stringify(formData, null, 2),
@@ -2963,9 +2987,10 @@ function App(): React.JSX.Element {
         const eycPath = joinPath(result.projectDir, `${info.name}.eyc`)
         const eycContent = await window.api?.project?.readFile(eycPath)
         if (eycContent) {
+          const tabLabel = extractAssemblyLabel(eycContent) || stripFileExtension(`${info.name}.eyc`)
           setOpenProjectFiles([{
             id: eycPath,
-            label: `${info.name}.eyc`,
+            label: tabLabel,
             language: 'eyc',
             value: eycContent,
             savedValue: eycContent,
@@ -3122,7 +3147,7 @@ function App(): React.JSX.Element {
 
   const aiIdeContext = useMemo(() => {
     const lines: string[] = [
-      `IDE: ycIDE v0.0.2.50（易承语言集成开发环境）`,
+      `IDE: ycIDE v0.0.3.51（易承语言集成开发环境）`,
       `运行平台: ${runtimePlatform}`,
       `编译目标: ${targetPlatform} / ${targetArch}`,
     ]
@@ -3370,7 +3395,10 @@ function App(): React.JSX.Element {
     } else {
       const diskContent = await window.api?.project?.readFile(result.filePath)
       if (typeof diskContent !== 'string') return false
-      const label = getBaseName(result.filePath)
+      const fileName = getBaseName(result.filePath)
+      const label = language === 'eyc'
+        ? (extractAssemblyLabel(nextContent) || stripFileExtension(fileName))
+        : stripFileExtension(fileName)
       editorRef.current?.upsertFile({
         id: result.filePath,
         label,
@@ -3409,7 +3437,10 @@ function App(): React.JSX.Element {
     } else {
       const diskContent = await window.api?.project?.readFile(result.filePath)
       if (typeof diskContent !== 'string') return false
-      const label = getBaseName(result.filePath)
+      const fileName = getBaseName(result.filePath)
+      const label = language === 'eyc'
+        ? (extractAssemblyLabel(result.originalContent) || stripFileExtension(fileName))
+        : stripFileExtension(fileName)
       editorRef.current?.upsertFile({
         id: result.filePath,
         label,
@@ -3602,6 +3633,8 @@ function App(): React.JSX.Element {
                   editorFontFamily={ideSettings.editorFontFamily}
                   editorFontSize={ideSettings.editorFontSize}
                   editorLineHeight={ideSettings.editorLineHeight}
+                  editorFreezeSubTableHeader={ideSettings.editorFreezeSubTableHeader}
+                  editorShowMinimapPreview={ideSettings.editorShowMinimapPreview}
                 />
               </div>
             </div>

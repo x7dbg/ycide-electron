@@ -1,3 +1,5 @@
+import { parseLines } from './eycBlocks'
+
 function normalizeEycText(text: string): string {
   return text.replace(/\r\n?/g, '\n').replace(/^\uFEFF/, '')
 }
@@ -589,6 +591,23 @@ function eycToInternalFormat(text: string): string {
   return convertYiFlowToInternal(text)
 }
 
+/**
+ * 从粘贴文本中提取 `.程序集变量 ...` 声明行。
+ * 调用方应在目标文档已存在 `.程序集` 声明时使用本函数，
+ * 将提取到的变量插入到顶部程序集的变量区，避免与 sanitize 后的内联粘贴同时生效造成重复。
+ */
+function extractAssemblyVarLinesFromPasted(clipText: string, currentSource: string): string[] {
+  if (!hasAssemblyDeclaration(currentSource)) return []
+  const internalLike = isLikelyInternalFlowText(clipText)
+  const normalized = internalLike
+    ? normalizeEycText(clipText)
+    : eycToInternalFormat(clipText)
+  return normalized
+    .split('\n')
+    .map(line => line.replace(/\r$/, ''))
+    .filter(line => line.trimStart().startsWith('.程序集变量 '))
+}
+
 function sanitizePastedTextForCurrent(text: string, currentSource: string): string {
   const internalLike = isLikelyInternalFlowText(text)
   debugFlowPaste('sanitize:input', {
@@ -612,9 +631,12 @@ function sanitizePastedTextForCurrent(text: string, currentSource: string): stri
     const trimmed = line.trimStart()
     if (!trimmed.startsWith('.')) return false
     // 这些是文件/程序集级声明，粘贴到代码区时应剔除，避免污染流程结构。
+    // `.程序集变量` 也在此剔除；调用方（buildMultiLinePasteResult）会单独提取它们
+    // 并插入到现有文档最顶部的 `.程序集` 程序集变量区，而不是在光标处内联。
     return trimmed.startsWith('.程序集 ')
       || trimmed.startsWith('.版本 ')
       || trimmed.startsWith('.支持库 ')
+      || trimmed.startsWith('.程序集变量 ')
   }
 
   const filtered = normalizeEycText(normalized)
@@ -629,9 +651,87 @@ function sanitizePastedTextForCurrent(text: string, currentSource: string): stri
   return trimmedEdgeBlank
 }
 
+type RoutedDeclLanguage = 'ell' | 'egv' | 'ecs' | 'edt'
+
+function extractRoutedDeclarationLinesFromPasted(clipText: string, currentSource: string): Array<{ language: RoutedDeclLanguage; lines: string[] }> {
+  const internalLike = isLikelyInternalFlowText(clipText)
+  const normalized = internalLike
+    ? normalizeEycText(clipText)
+    : eycToInternalFormat(clipText)
+
+  const rawLines = normalized
+    .split('\n')
+    .map(line => line.replace(/\r$/, ''))
+  if (rawLines.length === 0) return []
+
+  const parsed = parseLines(rawLines.join('\n'))
+  const buckets = new Map<RoutedDeclLanguage, string[]>([
+    ['ell', []],
+    ['egv', []],
+    ['ecs', []],
+    ['edt', []],
+  ])
+
+  let owner: 'dll' | 'dataType' | '' = ''
+  for (let i = 0; i < parsed.length; i++) {
+    const ln = parsed[i]
+    const line = rawLines[i]
+    if (ln.type === 'dll') {
+      owner = 'dll'
+      buckets.get('ell')?.push(line)
+      continue
+    }
+    if (ln.type === 'globalVar') {
+      owner = ''
+      buckets.get('egv')?.push(line)
+      continue
+    }
+    if (ln.type === 'constant') {
+      owner = ''
+      buckets.get('ecs')?.push(line)
+      continue
+    }
+    if (ln.type === 'dataType') {
+      owner = 'dataType'
+      buckets.get('edt')?.push(line)
+      continue
+    }
+    if (ln.type === 'subParam' && owner === 'dll') {
+      buckets.get('ell')?.push(line)
+      continue
+    }
+    if (ln.type === 'dataTypeMember' && owner === 'dataType') {
+      buckets.get('edt')?.push(line)
+      continue
+    }
+    if (
+      ln.type === 'assembly'
+      || ln.type === 'assemblyVar'
+      || ln.type === 'sub'
+      || ln.type === 'localVar'
+      || ln.type === 'resource'
+      || ln.type === 'image'
+      || ln.type === 'sound'
+      || ln.type === 'version'
+      || ln.type === 'supportLib'
+      || ln.type === 'code'
+      || ln.type === 'comment'
+      || ln.type === 'blank'
+    ) {
+      owner = ''
+    }
+  }
+
+  return (['ell', 'egv', 'ecs', 'edt'] as const)
+    .map(language => ({ language, lines: buckets.get(language) || [] }))
+    .filter(item => item.lines.length > 0)
+}
+
 export {
   normalizeEycText,
   eycToInternalFormat,
   eycToYiFormat,
   sanitizePastedTextForCurrent,
+  extractAssemblyVarLinesFromPasted,
+  extractRoutedDeclarationLinesFromPasted,
 }
